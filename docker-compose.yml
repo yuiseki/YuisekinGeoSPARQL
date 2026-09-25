@@ -25,6 +25,12 @@ services:
     # user instead cannot recover from a directory root already owns, and
     # leaving them owned by root means removing them needs privileges that
     # "start from a clean checkout" should not require.
+    #
+    # A country-sized source is read with a filter pushed into the Parquet
+    # scan, which still needs room for the scan itself: about 7 GB for Japan.
+    # The cap is here because this machine has no swap, and a process that
+    # outgrows it does not get killed, it stops answering.
+    mem_limit: ${BUILDER_MEMORY:-24g}
     environment:
       HOST_UID: "${UID:-1000}"
       HOST_GID: "${GID:-1000}"

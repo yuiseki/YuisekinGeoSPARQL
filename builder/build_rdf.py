@@ -226,6 +226,164 @@ def load_tokyo23_poi(paths, spec):
     return out
 
 
+def _jp_table(path, columns, filter_):
+    """One filtered scan of an osm2pgsql Parquet table.
+
+    The filter is pushed into the scan rather than applied afterwards.
+    planet_osm_polygon is 3.3 GB and 33 million rows, of which these layers
+    keep two thousand or sixty thousand; reading it whole to throw away the
+    rest is how a builder comes to need more memory than the machine has.
+    """
+    import pyarrow.dataset as ds
+
+    return ds.dataset(path, format="parquet").to_table(
+        columns=columns, filter=filter_)
+
+
+def load_jp_admin(paths, spec):
+    """One administrative level of Japan, each unit as one geometry.
+
+    A unit may arrive as several rows: osm2pgsql splits a relation's parts,
+    the same reason the Tokyo wards are merged. Merging by osm_id is what
+    makes 1,982 rows into 1,740 municipalities.
+    """
+    import json as _json
+    import pyarrow.compute as pc
+    from shapely import wkb
+    from shapely.geometry import MultiPolygon
+    from shapely.ops import unary_union
+
+    level = spec["admin_level"]
+    t = _jp_table(
+        paths[0], ["osm_id", "admin_level", "boundary", "name", "tags", "way"],
+        (pc.field("boundary") == "administrative")
+        & (pc.field("admin_level") == level))
+
+    parts = {}
+    for row in t.to_pylist():
+        if not row["name"]:
+            continue
+        try:
+            tags = _json.loads(row["tags"] or "{}")
+        except (ValueError, TypeError):
+            tags = {}
+        p = parts.setdefault(row["osm_id"], {"name": row["name"], "tags": tags,
+                                             "geoms": [], "rows": 0})
+        p["geoms"].append(wkb.loads(bytes(row["way"])))
+        p["rows"] += 1
+
+    out = []
+    for osm_id in sorted(parts):
+        p = parts[osm_id]
+        geom = unary_union(sorted(p["geoms"], key=lambda g: (g.bounds, g.area)))
+        if geom.geom_type == "Polygon":
+            geom = MultiPolygon([geom])
+        labels = [(p["name"], "ja")]
+        if p["tags"].get("name:en"):
+            labels.append((p["tags"]["name:en"], "en"))
+        props = ['gs:osmId "%d"^^xsd:long' % osm_id,
+                 'gs:adminLevel "%s"' % level,
+                 "gs:osmRelation <https://www.openstreetmap.org/relation/%d>"
+                 % abs(osm_id)]
+        qid = p["tags"].get("wikidata") or ""
+        if QID.match(qid):
+            props.append("owl:sameAs wd:%s" % qid)
+        for tag in ("ISO3166-1", "ISO3166-2", "ref"):
+            if p["tags"].get(tag):
+                props.append('gs:%s "%s"' % (tag.replace("-", ""),
+                                             escape(p["tags"][tag])))
+        out.append({"key": safe_key("%s-%d" % (spec["collection"].split("-")[-1],
+                                               abs(osm_id))),
+                    "sort": osm_id, "label": labels, "geometry": geom,
+                    "props": props, "parts": p["rows"], "name": p["name"]})
+    return out
+
+
+def load_jp_poi(paths, spec):
+    """Named places in Japan carrying a Wikidata id, one feature per id.
+
+    The same rule as the Tokyo layer, at a hundred times the size. The
+    identity is the Wikidata id rather than the OSM object, an area is kept
+    where a place is mapped both ways, and any id that an administrative
+    boundary in this extract carries is dropped, because those are their own
+    layers and would otherwise arrive twice under different IRIs.
+    """
+    import json as _json
+    import pyarrow.compute as pc
+    from shapely import wkb
+    from shapely.geometry import MultiPolygon
+    from shapely.ops import unary_union
+
+    KIND_RANK = {"area": 1, "point": 0}
+    has_wikidata = (pc.field("name").is_valid()
+                    & pc.match_substring(pc.field("tags"), '"wikidata"'))
+
+    tables = []
+    for path in paths:
+        cols = ["osm_id", "name", "tags", "way"]
+        # Only the polygon table has these two, and only it needs them.
+        if "polygon" in os.path.basename(path):
+            cols += ["boundary", "admin_level"]
+        tables.append(_jp_table(path, cols, has_wikidata).to_pylist())
+
+    def qid_of(row):
+        try:
+            tags = _json.loads(row["tags"] or "{}")
+        except (ValueError, TypeError):
+            return "", {}
+        qid = tags.get("wikidata") or ""
+        return (qid if QID.match(qid) else ""), tags
+
+    administrative = {qid_of(r)[0] for t in tables for r in t
+                      if r.get("boundary") == "administrative"} - {""}
+
+    by_qid = {}
+    for rows_in in tables:
+        for row in rows_in:
+            if row.get("boundary") == "administrative":
+                continue
+            qid, tags = qid_of(row)
+            if not qid or qid in administrative:
+                continue
+            geom = wkb.loads(bytes(row["way"]))
+            kind = ("area" if geom.geom_type in ("Polygon", "MultiPolygon")
+                    else "point" if geom.geom_type == "Point" else None)
+            if kind is None:
+                continue
+            have = by_qid.get(qid)
+            if have is None or KIND_RANK[kind] > KIND_RANK[have["kind"]]:
+                by_qid[qid] = {"kind": kind, "name": row["name"], "tags": tags,
+                               "geoms": [geom], "ids": [row["osm_id"]]}
+            elif KIND_RANK[kind] == KIND_RANK[have["kind"]]:
+                have["geoms"].append(geom)
+                have["ids"].append(row["osm_id"])
+
+    out = []
+    for qid in sorted(by_qid):
+        p = by_qid[qid]
+        if p["kind"] == "area":
+            geom = unary_union(sorted(p["geoms"],
+                                      key=lambda g: (g.bounds, g.area)))
+            if geom.geom_type == "Polygon":
+                geom = MultiPolygon([geom])
+        else:
+            geom = sorted(p["geoms"], key=lambda g: g.coords[0])[0]
+        labels = [(p["name"], "ja")]
+        if p["tags"].get("name:en"):
+            labels.append((p["tags"]["name:en"], "en"))
+        props = ["owl:sameAs wd:%s" % qid]
+        for osm_id in sorted(set(p["ids"])):
+            props.append('gs:osmId "%d"^^xsd:long' % osm_id)
+        for tag in ("amenity", "shop", "tourism", "railway", "place",
+                    "historic", "leisure", "natural", "building"):
+            if p["tags"].get(tag):
+                props.append('gs:%s "%s"' % (tag, escape(p["tags"][tag])))
+        out.append({"key": safe_key("poi-" + qid), "sort": qid,
+                    "label": labels, "geometry": geom, "props": props,
+                    "parts": len(p["ids"]), "name": p["name"]})
+    return out
+
+
 def load_ne_admin0(path, spec):
     """258 countries as Natural Earth draws them, de facto, at 1:10m."""
     import pyarrow.parquet as pq
@@ -312,6 +470,8 @@ def load_ne_admin1(path, spec):
 
 LOADERS = {"load_tokyo23": load_tokyo23,
            "load_tokyo23_poi": load_tokyo23_poi,
+           "load_jp_admin": load_jp_admin,
+           "load_jp_poi": load_jp_poi,
            "load_ne_admin0": load_ne_admin0,
            "load_ne_admin1": load_ne_admin1}
 
@@ -520,11 +680,30 @@ def relations(features, normalize=None, tolerance=None, allowed=None):
     return out
 
 
+# Anything that would end a field or a row inside a field. One place in Japan
+# is named "私立鵬学園高等学校\t第二キャンパス", with a tab in the middle of
+# the name tag, and it turned two rows of the file into rows with nineteen
+# columns. A reader using DictReader does not fail on that: it shifts every
+# value after the name by one and hands back a layer where an id should be.
+TSV_WHITESPACE = re.compile(r"[\t\r\n]+")
+
+
+def tsv_field(value):
+    """One field, with nothing in it that could be read as a separator.
+
+    The name columns are a convenience for a person reading the file; the id
+    columns are the identity. Collapsing whitespace in a name loses nothing
+    that matters here, and the label in the graph keeps the original.
+    """
+    return TSV_WHITESPACE.sub(" ", str(value))
+
+
 def write_relations(rels, path):
     with open(path, "w", encoding="utf-8", newline="\n") as f:
         f.write("\t".join(RELATION_COLUMNS) + "\n")
         for r in rels:
-            f.write("\t".join(str(r[c]) for c in RELATION_COLUMNS) + "\n")
+            f.write("\t".join(tsv_field(r[c]) for c in RELATION_COLUMNS)
+                    + "\n")
 
 
 def positions(geom):

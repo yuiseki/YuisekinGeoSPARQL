@@ -266,3 +266,18 @@ def test_a_ward_is_inside_the_country_the_other_sources_draw(relations, built):
     tokyo = [r for (a, b), r in relations.items()
              if a == taito and b.startswith("state-JPN")]
     assert tokyo and all(r["rcc8_raw"] == "NTPP" for r in tokyo)
+
+
+def test_no_field_can_be_read_as_a_separator(relations):
+    """A name with a tab in it, which shifts every value after it.
+
+    One place in Japan is named 私立鵬学園高等学校 with a tab before
+    第二キャンパス. csv.DictReader does not fail on the extra column: it
+    shifts the row and hands back a layer name where an id should be, and the
+    first thing downstream that looks up that id raises somewhere else
+    entirely.
+    """
+    for r in relations.values():
+        for name, value in r.items():
+            assert "\t" not in (value or ""), (name, r)
+            assert "\n" not in (value or ""), (name, r)

@@ -97,6 +97,95 @@ SOURCES = {
             "not. Administrative boundaries are excluded: the wards are "
             "already a layer."),
     },
+    # The country-sized sibling of tokyo23, from the same planet file. Four
+    # layers rather than one, because the question this source exists for is a
+    # hierarchy: a place is in a municipality, which is in a prefecture, which
+    # is in the country.
+    #
+    # Every layer is read from the same two Parquet tables with a filter
+    # pushed into the scan. planet_osm_polygon is 3.3 GB and 33 million rows;
+    # reading it whole to keep two thousand of them is how a builder ends up
+    # needing more memory than the machine has.
+    "jp-country": {
+        "title": "Japan",
+        "dataset": "yuiseki/osm-japan-src-2026-08",
+        "revision": "b51be030416ef0b2a011a2d51d3cfbf066a71bfe",
+        "files": ["parquet/planet_osm_polygon.parquet"],
+        "licence": "ODbL-1.0",
+        "rights_holder": "OpenStreetMap contributors",
+        "iri_base": BASE + "jp-country/",
+        "collection": "jp-country",
+        "collection_label": [("日本", "ja"), ("Japan", "en")],
+        "feature_class": "Country",
+        "admin_level": "2",
+        "expected": 1,
+        "source_crs": "EPSG:3857",
+        "loader": "load_jp_admin",
+        "note": "The admin_level=2 relation, as OpenStreetMap draws it.",
+    },
+    "jp-pref": {
+        "title": "Prefectures of Japan",
+        "dataset": "yuiseki/osm-japan-src-2026-08",
+        "revision": "b51be030416ef0b2a011a2d51d3cfbf066a71bfe",
+        "files": ["parquet/planet_osm_polygon.parquet"],
+        "licence": "ODbL-1.0",
+        "rights_holder": "OpenStreetMap contributors",
+        "iri_base": BASE + "jp-pref/",
+        "collection": "jp-pref",
+        "collection_label": [("都道府県", "ja"),
+                             ("Prefectures of Japan", "en")],
+        "feature_class": "Prefecture",
+        "admin_level": "4",
+        "expected": 47,
+        "source_crs": "EPSG:3857",
+        "loader": "load_jp_admin",
+        "note": "All 47, and nothing else: no admin_level=4 division of a "
+                "neighbouring country survives the clip.",
+    },
+    "jp-muni": {
+        "title": "Municipalities of Japan",
+        "dataset": "yuiseki/osm-japan-src-2026-08",
+        "revision": "b51be030416ef0b2a011a2d51d3cfbf066a71bfe",
+        "files": ["parquet/planet_osm_polygon.parquet"],
+        "licence": "ODbL-1.0",
+        "rights_holder": "OpenStreetMap contributors",
+        "iri_base": BASE + "jp-muni/",
+        "collection": "jp-muni",
+        "collection_label": [("市区町村", "ja"),
+                             ("Municipalities of Japan", "en")],
+        "feature_class": "Municipality",
+        "admin_level": "7",
+        "expected": 1740,
+        "source_crs": "EPSG:3857",
+        "loader": "load_jp_admin",
+        "note": "市町村 and the special wards of Tokyo, which OpenStreetMap "
+                "puts at the same level. The wards of a designated city are "
+                "admin_level=8 and are not here.",
+    },
+    "jp-poi": {
+        "title": "Named places in Japan that carry a Wikidata id",
+        "dataset": "yuiseki/osm-japan-src-2026-08",
+        "revision": "b51be030416ef0b2a011a2d51d3cfbf066a71bfe",
+        "files": ["parquet/planet_osm_point.parquet",
+                  "parquet/planet_osm_polygon.parquet"],
+        "licence": "ODbL-1.0",
+        "rights_holder": "OpenStreetMap contributors",
+        "iri_base": BASE + "jp-poi/",
+        "collection": "jp-poi",
+        "collection_label": [("日本の地物", "ja"),
+                             ("Named places in Japan", "en")],
+        "feature_class": "Place",
+        "expected": 80748,
+        "source_crs": "EPSG:3857",
+        "loader": "load_jp_poi",
+        # Only against the municipalities. 85,000 places against each other is
+        # a different dataset with a different cost, and the question this
+        # layer was added for is which municipality a place is in.
+        "pairs_with": ["jp-muni"],
+        "note": "One feature per Wikidata id, from the point and polygon "
+                "tables. Administrative boundaries are excluded: they are "
+                "their own layers.",
+    },
     "ne-admin0": {
         "title": "Natural Earth admin-0 countries, 10m",
         "dataset": "yuiseki/ne-admin0-10m",
