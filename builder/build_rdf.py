@@ -47,10 +47,22 @@ PREFIXES = """@prefix geo:   <http://www.opengis.net/ont/geosparql#> .
 
 
 def fetch(spec, out_dir):
+    """The local path of this source's file, or of each of them.
+
+    A source names one file or several. A place mapped as a node lands in one
+    osm2pgsql table and the same place mapped as a way lands in another, so a
+    layer that is about places rather than about tables reads both.
+    """
     from huggingface_hub import hf_hub_download
-    return hf_hub_download(spec["dataset"], spec["file"], repo_type="dataset",
-                           revision=spec["revision"],
-                           cache_dir=os.path.join(out_dir, "hf"))
+
+    def one(name):
+        return hf_hub_download(spec["dataset"], name, repo_type="dataset",
+                               revision=spec["revision"],
+                               cache_dir=os.path.join(out_dir, "hf"))
+
+    if spec.get("files"):
+        return [one(n) for n in spec["files"]]
+    return one(spec["file"])
 
 
 # --------------------------------------------------------------------------
@@ -112,6 +124,105 @@ def load_tokyo23(path, spec):
         out.append({"key": safe_key("ward-%d" % abs(osm_id)), "sort": osm_id,
                     "label": labels, "geometry": geom, "props": props,
                     "parts": p["rows"], "name": p["name"]})
+    return out
+
+
+def load_tokyo23_poi(paths, spec):
+    """Named places carrying a Wikidata id, one feature per id.
+
+    The identity is the Wikidata id, not the OSM object. 63 places are mapped
+    both as a node and as a way, and two features with one label and one name
+    would be two answers to every question about that place. Where both exist
+    the way is kept: an area stands in an RCC8 relation to a ward and a point
+    does not, so keeping the point would throw away the part a composition
+    table can reason about.
+
+    Administrative boundaries are dropped, and so are the 23 wards' own
+    Wikidata ids. Dropping the boundary rows alone is not enough, because
+    台東区 is also a place node at the centre of the ward carrying the ward's
+    id. It would arrive here as a point named 台東区 sitting inside a ward
+    named 台東区, and a question about which ward a place is in would have two
+    answers, one of them the place itself.
+
+    Only the wards, not every administrative unit. Excluding the id of every
+    boundary in the extract took 390 features, most of them 町丁 mapped as
+    both a boundary and a place node. Those are places this layer is for; the
+    wards are the layer it would collide with.
+    """
+    import json as _json
+    import pyarrow.parquet as pq
+    from shapely import wkb
+    from shapely.geometry import MultiPolygon
+    from shapely.ops import unary_union
+
+    KIND_RANK = {"area": 1, "point": 0}
+    tables = [pq.read_table(p, columns=["osm_id", "name", "way", "tags",
+                                        "boundary", "admin_level"]).to_pylist()
+              for p in paths]
+
+    def qid_of(row):
+        try:
+            tags = _json.loads(row["tags"] or "{}")
+        except (ValueError, TypeError):
+            return "", {}
+        qid = tags.get("wikidata") or ""
+        return (qid if QID.match(qid) else ""), tags
+
+    # The same rule load_tokyo23 selects the wards by, so the two layers
+    # cannot disagree about what a ward is.
+    wards = {qid_of(r)[0] for t in tables for r in t
+             if r["boundary"] == "administrative"
+             and r["admin_level"] == "7"
+             and (r["name"] or "").endswith("区")} - {""}
+
+    by_qid = {}
+    for rows_in in tables:
+        for row in rows_in:
+            if not row["name"] or row["boundary"] == "administrative":
+                continue
+            qid, tags = qid_of(row)
+            if not qid or qid in wards:
+                continue
+            geom = wkb.loads(bytes(row["way"]))
+            kind = "area" if geom.geom_type in ("Polygon", "MultiPolygon") \
+                else "point" if geom.geom_type == "Point" else None
+            if kind is None:
+                continue
+            have = by_qid.get(qid)
+            if have is None or KIND_RANK[kind] > KIND_RANK[have["kind"]]:
+                by_qid[qid] = {"kind": kind, "name": row["name"], "tags": tags,
+                               "geoms": [geom], "ids": [row["osm_id"]]}
+            elif KIND_RANK[kind] == KIND_RANK[have["kind"]]:
+                # osm2pgsql splits a multipolygon's parts across rows, the
+                # same reason the wards are merged. Two separate places
+                # sharing one Wikidata id are merged here too, which is a
+                # statement about the tagging and not about the geometry.
+                have["geoms"].append(geom)
+                have["ids"].append(row["osm_id"])
+
+    out = []
+    for qid in sorted(by_qid):
+        p = by_qid[qid]
+        if p["kind"] == "area":
+            geom = unary_union(sorted(p["geoms"],
+                                      key=lambda g: (g.bounds, g.area)))
+            if geom.geom_type == "Polygon":
+                geom = MultiPolygon([geom])
+        else:
+            geom = sorted(p["geoms"], key=lambda g: g.coords[0])[0]
+        labels = [(p["name"], "ja")]
+        if p["tags"].get("name:en"):
+            labels.append((p["tags"]["name:en"], "en"))
+        props = ["owl:sameAs wd:%s" % qid]
+        for osm_id in sorted(set(p["ids"])):
+            props.append('gs:osmId "%d"^^xsd:long' % osm_id)
+        for tag in ("amenity", "shop", "tourism", "railway", "place",
+                    "historic", "leisure", "natural", "building"):
+            if p["tags"].get(tag):
+                props.append('gs:%s "%s"' % (tag, escape(p["tags"][tag])))
+        out.append({"key": safe_key("poi-" + qid), "sort": qid,
+                    "label": labels, "geometry": geom, "props": props,
+                    "parts": len(p["ids"]), "name": p["name"]})
     return out
 
 
@@ -199,8 +310,14 @@ def load_ne_admin1(path, spec):
     return out
 
 
-LOADERS = {"load_tokyo23": load_tokyo23, "load_ne_admin0": load_ne_admin0,
+LOADERS = {"load_tokyo23": load_tokyo23,
+           "load_tokyo23_poi": load_tokyo23_poi,
+           "load_ne_admin0": load_ne_admin0,
            "load_ne_admin1": load_ne_admin1}
+
+# A Wikidata item id and nothing else. The tag holds whatever an editor typed:
+# a property id, a bare number, two ids separated by a semicolon.
+QID = re.compile(r"^Q[1-9][0-9]*$")
 
 
 # --------------------------------------------------------------------------
@@ -275,26 +392,74 @@ def turtle(rows, spec, key):
 
 RELATION_COLUMNS = (
     "subject_source", "subject_layer", "subject_id", "subject_name",
+    "subject_kind",
     "object_source", "object_layer", "object_id", "object_name",
+    "object_kind",
     "de9im_raw", "sf_raw", "rcc8_raw",
     "outside_area_deg2", "outside_ratio",
     "norm_method", "norm_tolerance", "rcc8_norm",
 )
 
-# Two areas whose bounding boxes miss cannot meet, and this is the matrix
-# every such pair has. Pairs are omitted from the file rather than written
-# with it: 4,877 features make 23.8 million ordered pairs and all but a few
-# tens of thousands are this. The reader fills them in.
-DISJOINT = "FF2FF1212"
+# Two features that do not meet have a matrix decided entirely by their
+# kinds, and this is the table of them. Pairs are omitted from the file rather
+# than written with it: 4,877 features make 23.8 million ordered pairs and all
+# but a few tens of thousands are disjoint. The reader fills them in, which is
+# why the manifest carries this table rather than a single string: a point has
+# no boundary, so a point that misses an area does not spell it the way two
+# areas do.
+DISJOINT_BY_KINDS = {
+    ("area", "area"): "FF2FF1212",
+    ("point", "area"): "FF0FFF212",
+    ("area", "point"): "FF2FF10F2",
+    ("point", "point"): "FF0FFF0F2",
+    ("line", "line"): "FF1FF0102",
+    ("point", "line"): "FF0FFF102",
+    ("line", "point"): "FF1FF00F2",
+    ("area", "line"): "FF2FF1102",
+    ("line", "area"): "FF1FF0212",
+}
+
+DISJOINT = DISJOINT_BY_KINDS[("area", "area")]
 
 
-def relations(features, normalize=None, tolerance=None):
+def allowed_pairs(specs):
+    """Which layers each layer is compared against, by name.
+
+    A layer with no restriction is compared against everything, which is what
+    makes a ward inside a country appear at all. A layer that names its
+    partners is compared against those and nothing else, including not against
+    itself: 7,288 places against each other is a different dataset with a
+    different cost, and it is not the question that layer was added for.
+
+    A pair is computed only if both ends allow it, so one restricted layer is
+    enough to exclude a pair and the file cannot depend on which way round the
+    two were seen.
+    """
+    return {spec["collection"]: (set(spec["pairs_with"])
+                                 if spec.get("pairs_with") else None)
+            for spec in specs}
+
+
+def pair_allowed(allowed, a_layer, b_layer):
+    for first, second in ((a_layer, b_layer), (b_layer, a_layer)):
+        limit = allowed.get(first)
+        if limit is not None and second not in limit:
+            return False
+    return True
+
+
+def relations(features, normalize=None, tolerance=None, allowed=None):
     """Every ordered pair that is not disjoint, with what the matrix says.
 
     Computed over every feature from every source at once, not per source.
     Cross-layer pairs are the point: a ward inside a country, a state inside
     the country it names. Those are the triples a composition table is checked
     against, and a per-source file cannot hold them.
+
+    The kinds are in the output because two of the eight Simple Features
+    predicates are defined by cases on them, and because RCC8 is a calculus of
+    regions: a pair involving a point has no RCC8 relation and its column is
+    empty rather than filled with the nearest relation that fits.
 
     raw and normalized are kept apart. The raw columns are observations of the
     geometry as published; the normalized ones are a judgement, and carry the
@@ -304,7 +469,9 @@ def relations(features, normalize=None, tolerance=None):
 
     import rcc8 as R
 
+    allowed = allowed or {}
     geoms = [f["crs84"] for f in features]
+    kinds = [R.kind_of(g) for g in geoms]
     tree = STRtree(geoms)
     out = []
     for i, a in enumerate(features):
@@ -312,25 +479,35 @@ def relations(features, normalize=None, tolerance=None):
             if j == i:
                 continue
             b = features[j]
+            if not pair_allowed(allowed, a["layer"], b["layer"]):
+                continue
             ga, gb = geoms[i], geoms[j]
             matrix = relate(ga, gb)
-            if matrix == DISJOINT:
+            if matrix.startswith("FF") and matrix[3:5] == "FF":
+                # Disjoint, whatever the kinds. The constant below is the
+                # area/area spelling of it; a pair involving a point spells
+                # the same fact differently, because a point has no boundary,
+                # so the test is the pattern rather than the string.
                 continue
-            sf = R.simple_features(matrix)
+            ka, kb = kinds[i], kinds[j]
+            sf = R.simple_features(matrix, ka, kb)
             outside = ga.difference(gb).area
             row = {
                 "subject_source": a["source"], "subject_layer": a["layer"],
                 "subject_id": a["key"], "subject_name": a["name"],
+                "subject_kind": ka,
                 "object_source": b["source"], "object_layer": b["layer"],
                 "object_id": b["key"], "object_name": b["name"],
+                "object_kind": kb,
                 "de9im_raw": matrix,
                 "sf_raw": ",".join(k for k in sorted(sf) if sf[k]),
-                "rcc8_raw": R.of_matrix(matrix) or "",
+                "rcc8_raw": (R.of_matrix(matrix) or ""
+                             if ka == "area" and kb == "area" else ""),
                 "outside_area_deg2": "%.12g" % outside,
                 "outside_ratio": "%.12g" % (outside / ga.area if ga.area else 0.0),
                 "norm_method": "", "norm_tolerance": "", "rcc8_norm": "",
             }
-            if normalize == "snap":
+            if normalize == "snap" and ka == "area" and kb == "area":
                 # Move the subject's vertices onto the object's where they are
                 # within the tolerance, then read the matrix again. Mechanical
                 # and reversible: the raw columns are untouched.
@@ -348,6 +525,16 @@ def write_relations(rels, path):
         f.write("\t".join(RELATION_COLUMNS) + "\n")
         for r in rels:
             f.write("\t".join(str(r[c]) for c in RELATION_COLUMNS) + "\n")
+
+
+def positions(geom):
+    """How many coordinates a geometry holds, whatever kind it is."""
+    if geom.geom_type == "Point":
+        return 1
+    if hasattr(geom, "geoms"):
+        return sum(positions(g) for g in geom.geoms)
+    return (len(geom.exterior.coords)
+            + sum(len(i.coords) for i in geom.interiors))
 
 
 def build_graph(key, out_dir):
@@ -381,9 +568,7 @@ def build_graph(key, out_dir):
         "features": len(rows),
         "features_with_more_than_one_source_row":
             {r["name"]: r["parts"] for r in rows if r["parts"] > 1},
-        "positions": sum(len(p.exterior.coords)
-                         + sum(len(i.coords) for i in p.interiors)
-                         for r in rows for p in r["crs84"].geoms),
+        "positions": sum(positions(r["crs84"]) for r in rows),
         "ttl_file": f"{key}.ttl",
         "ttl_bytes": len(ttl.encode("utf-8")),
         "ttl_sha256": hashlib.sha256(ttl.encode("utf-8")).hexdigest(),
@@ -425,14 +610,29 @@ def main():
             print(f"  {name} was assembled from {n} rows")
 
     features.sort(key=lambda r: (r["source"], r["key"]))
-    rels = relations(features, a.normalize, a.tolerance)
+    rels = relations(features, a.normalize, a.tolerance,
+                     allowed_pairs([S.SOURCES[k] for k in keys]))
     rel_path = os.path.join(a.out, "relations.tsv")
     write_relations(rels, rel_path)
     rel_text = open(rel_path, encoding="utf-8").read()
 
     total = len(features)
     ordered_pairs = total * (total - 1)
-    by_rcc8 = collections.Counter(r["rcc8_raw"] or "(unclassified)" for r in rels)
+    # How many of those pairs were actually looked at. With a layer that names
+    # its partners the two numbers differ by millions, and reporting the
+    # difference as disjoint would say the builder had measured pairs it never
+    # formed.
+    allowed = allowed_pairs([S.SOURCES[k] for k in keys])
+    per_layer = collections.Counter(f["layer"] for f in features)
+    compared = sum(
+        n * (per_layer[m] - (1 if l == m else 0))
+        for l, n in sorted(per_layer.items())
+        for m in sorted(per_layer)
+        if pair_allowed(allowed, l, m))
+    # An empty RCC8 column is not a failure to classify: it is a pair that has
+    # no RCC8 relation because one of its operands is not a region.
+    by_rcc8 = collections.Counter(
+        r["rcc8_raw"] or "(not two regions)" for r in rels)
     cross = collections.Counter(
         (r["subject_layer"], r["object_layer"]) for r in rels)
 
@@ -446,9 +646,15 @@ def main():
             "columns": list(RELATION_COLUMNS),
             "features": total,
             "ordered_pairs": ordered_pairs,
+            "pairs_compared": compared,
+            "pairs_not_compared": ordered_pairs - compared,
+            "layers_compared": {l: sorted(v) if v else "every layer"
+                                for l, v in sorted(allowed.items())},
             "rows_written": len(rels),
-            "omitted_as_disjoint": ordered_pairs - len(rels),
+            "omitted_as_disjoint": compared - len(rels),
             "omitted_matrix": DISJOINT,
+            "omitted_matrix_by_kinds": {f"{a_}/{b_}": m for (a_, b_), m
+                                        in sorted(DISJOINT_BY_KINDS.items())},
             "by_rcc8": dict(sorted(by_rcc8.items())),
             "by_layer_pair": {f"{a_}->{b_}": n
                               for (a_, b_), n in sorted(cross.items())},
@@ -456,8 +662,12 @@ def main():
             "tolerance": a.tolerance if a.normalize else None,
             "sha256": hashlib.sha256(rel_text.encode("utf-8")).hexdigest(),
             "note": (
-                "Only pairs that are not disjoint are written. A pair absent "
-                "from this file is DC, matrix " + DISJOINT + ". Areas are in "
+                "Only pairs that are not disjoint are written, and only "
+                "between layers that are compared at all; layers_compared "
+                "says which. A compared pair that is absent is disjoint, and "
+                "its matrix is the one for its two kinds in "
+                "omitted_matrix_by_kinds. RCC8 is a calculus of regions, so "
+                "rcc8_raw is empty unless both kinds are area. Areas are in "
                 "square degrees, which is only meaningful as the ratio beside "
                 "it."),
         },
@@ -476,9 +686,11 @@ def main():
         json.dump(manifest, f, ensure_ascii=False, indent=2, sort_keys=True)
         f.write("\n")
 
-    print(f"\n{total:,} features, {ordered_pairs:,} ordered pairs")
+    print(f"\n{total:,} features, {ordered_pairs:,} ordered pairs, "
+          f"{compared:,} compared")
     print(f"  {len(rels):,} written, "
-          f"{ordered_pairs - len(rels):,} omitted as DC")
+          f"{compared - len(rels):,} omitted as DC, "
+          f"{ordered_pairs - compared:,} never compared")
     for name, n in sorted(by_rcc8.items()):
         print(f"    {name:14} {n:7,}")
     print("  by layer:")

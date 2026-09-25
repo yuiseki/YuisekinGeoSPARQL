@@ -35,6 +35,7 @@ topological question.
 | source | features | from | licence |
 |---|---|---|---|
 | `tokyo23` | 23 wards | [`yuiseki/osm-tokyo23-src-2026-08`](https://huggingface.co/datasets/yuiseki/osm-tokyo23-src-2026-08) | ODbL-1.0 |
+| `tokyo23-poi` | 7,265 named places | the same dataset, point and polygon tables | ODbL-1.0 |
 | `ne-admin0` | 258 countries | [`yuiseki/ne-admin0-10m`](https://huggingface.co/datasets/yuiseki/ne-admin0-10m) | public domain |
 | `ne-admin1` | 4,596 states | the same dataset, admin-1 subset | public domain |
 
@@ -43,7 +44,7 @@ topological question.
 ```bash
 SOURCES=ne-admin0,ne-admin1 docker compose up --build   # public domain
 SOURCES=tokyo23             docker compose up --build   # ODbL
-docker compose up --build                               # all three, so ODbL
+docker compose up --build                               # all four, so ODbL
 ```
 
 Share-alike is contagious: one ODbL source makes the whole derived database
@@ -77,6 +78,7 @@ drift.
 ## What comes out
 
     data/tokyo23.ttl        23 wards as geo:Feature with geo:asWKT
+    data/tokyo23-poi.ttl    7,265 named places, one per Wikidata id
     data/ne-admin0.ttl      258 countries
     data/ne-admin1.ttl      4,596 states
     data/relations.tsv      every pair of features that is not disjoint
@@ -92,11 +94,11 @@ country it names.
 
 | column | |
 |---|---|
-| `subject_source` `subject_layer` `subject_id` `subject_name` | where the left side came from |
-| `object_source` `object_layer` `object_id` `object_name` | and the right |
+| `subject_source` `subject_layer` `subject_id` `subject_name` `subject_kind` | where the left side came from, and whether it is a point, a line or an area |
+| `object_source` `object_layer` `object_id` `object_name` `object_kind` | and the right |
 | `de9im_raw` | the DE-9IM matrix |
 | `sf_raw` | which Simple Features predicates hold, read off the matrix |
-| `rcc8_raw` | the RCC8 relation, read off the same matrix |
+| `rcc8_raw` | the RCC8 relation, read off the same matrix, empty unless both kinds are `area` |
 | `outside_area_deg2` `outside_ratio` | how far the subject leaves the object |
 | `norm_method` `norm_tolerance` `rcc8_norm` | empty unless `--normalize` was given |
 
@@ -105,17 +107,44 @@ carry the method and the tolerance that produced them, so a reader can
 disagree with the judgement without losing the observation. They are never
 mixed.
 
-Only pairs that are **not** disjoint are written. 4,877 features make
-23,780,252 ordered pairs and 36,694 of them are anything other than `DC`. A
-pair absent from the file is `DC`, matrix `FF2FF1212`.
+Only pairs that are **not** disjoint are written, and only between layers
+that are compared at all. 12,142 features make 147,416,022 ordered pairs;
+24,114,442 of them are formed, and 51,436 are anything other than disjoint.
+
+`tokyo23-poi` is compared against `tokyo23` and against nothing else. 7,265
+places against each other is a different dataset with a different cost, and
+the question the layer was added for is which ward a place is in.
+`layers_compared` in the manifest says which comparisons were made, so a
+reader can tell a pair that was looked at and found disjoint from a pair that
+was never formed.
+
+A compared pair that is absent is disjoint, and how that is spelled depends on
+the kinds: `FF2FF1212` for two areas, `FF0FFF212` for a point against an area.
+The manifest carries the whole table in `omitted_matrix_by_kinds`. A reader
+that fills in absent pairs with the area/area matrix gives every place a
+boundary it does not have.
 
 | RCC8 | pairs |
 |---|---|
-| `EC` | 26,900 |
-| `PO` | 2,644 |
-| `TPP` / `TPPi` | 2,080 each |
-| `NTPP` / `NTPPi` | 1,466 each |
+| `EC` | 26,906 |
+| `NTPP` / `NTPPi` | 5,134 each |
+| `PO` | 3,140 |
+| `TPP` / `TPPi` | 2,083 each |
 | `EQ` | 58 |
+| none | 6,898 |
+
+The last row is not a failure to classify. RCC8 is a calculus of regions: a
+point is not a region, so a place mapped as a node has no RCC8 relation to the
+ward it sits in, and the column is empty rather than holding the nearest
+relation that fits. Its Simple Features column is filled in the usual way, and
+`sfWithin` is what says the place is in the ward.
+
+Two of the eight Simple Features predicates are defined by cases on the kinds,
+which is why the kinds are in the file. `sfOverlaps` needs both operands to
+have the same dimension. `sfCrosses` needs them to differ, in a fixed argument
+order: a point crosses an area, an area does not cross a point. Reading the
+pattern without the case made every ward claim to cross every place inside
+it.
 
 ## Checking it against a proof
 

@@ -24,7 +24,8 @@ PREDICATES = ("sfEquals", "sfIntersects", "sfTouches",
 SMALL = ("tokyo23",)
 
 # Which feature class each source puts in the graph.
-CLASS = {"tokyo23": "Ward", "ne-admin0": "Country", "ne-admin1": "State"}
+CLASS = {"tokyo23": "Ward", "tokyo23-poi": "Place",
+         "ne-admin0": "Country", "ne-admin1": "State"}
 
 
 def pairs_from(ask, source, predicate):
@@ -177,7 +178,7 @@ def test_a_ward_is_inside_a_country_from_the_other_source(ask, built):
     require(built, "ne-admin0")
     rows = ask("""
         SELECT ?country WHERE {
-          ?w rdfs:label "台東区"@ja .
+          ?w a gs:Ward ; rdfs:label "台東区"@ja .
           ?c a gs:Country ; rdfs:label ?country ; geo:sfContains ?w .
           FILTER(lang(?country) = "en")
         }""")
@@ -192,8 +193,10 @@ def test_relate_takes_a_pattern_and_answers_a_boolean(ask, built):
     require(built, "tokyo23")
     rows = ask("""
         SELECT ?touches ?separate WHERE {
-          ?a rdfs:label "台東区"@ja ; geo:hasDefaultGeometry/geo:asWKT ?wa .
-          ?b rdfs:label "墨田区"@ja ; geo:hasDefaultGeometry/geo:asWKT ?wb .
+          ?a a gs:Ward ; rdfs:label "台東区"@ja ;
+             geo:hasDefaultGeometry/geo:asWKT ?wa .
+          ?b a gs:Ward ; rdfs:label "墨田区"@ja ;
+             geo:hasDefaultGeometry/geo:asWKT ?wb .
           BIND(geof:relate(?wa, ?wb, "FF2F11212") AS ?touches)
           BIND(geof:relate(?wa, ?wb, "FF*FF****") AS ?separate)
         }""")

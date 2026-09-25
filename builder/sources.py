@@ -67,6 +67,36 @@ SOURCES = {
             "The extract also holds 和光市, which is admin_level 7 and not a "
             "ward, because whole ways were kept at the boundary."),
     },
+    "tokyo23-poi": {
+        "title": "Named places in the Tokyo wards that carry a Wikidata id",
+        "dataset": "yuiseki/osm-tokyo23-src-2026-08",
+        "revision": "e60e017f6a77fa81014b11ca953ae0b2b177edaf",
+        # Two tables, because a place is mapped as a node or as a way
+        # depending on who mapped it and when, and which one it is says
+        # nothing about the place.
+        "files": ["parquet/planet_osm_point.parquet",
+                  "parquet/planet_osm_polygon.parquet"],
+        "licence": "ODbL-1.0",
+        "rights_holder": "OpenStreetMap contributors",
+        "iri_base": BASE + "tokyo23-poi/",
+        "collection": "tokyo23-poi",
+        "collection_label": [("東京都区部の地物", "ja"),
+                             ("Named places in the Tokyo wards", "en")],
+        "feature_class": "Place",
+        "expected": 7265,
+        "source_crs": "EPSG:3857",
+        "loader": "load_tokyo23_poi",
+        # Only against the wards. 7,288 places against each other is a
+        # different dataset with a different cost, and the question this layer
+        # was added for is which ward a place is in.
+        "pairs_with": ["tokyo23"],
+        "note": (
+            "One feature per Wikidata id rather than per OSM object. 63 of "
+            "them are mapped both as a node and as a way; the way is kept, "
+            "because an area relates to a ward as a region and a point does "
+            "not. Administrative boundaries are excluded: the wards are "
+            "already a layer."),
+    },
     "ne-admin0": {
         "title": "Natural Earth admin-0 countries, 10m",
         "dataset": "yuiseki/ne-admin0-10m",

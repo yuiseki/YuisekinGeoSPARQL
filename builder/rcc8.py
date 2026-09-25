@@ -24,6 +24,12 @@ CONVERSE = {"TPP": "TPPi", "NTPP": "NTPPi"}
 # asserts that, so a matrix RCC8 cannot classify is an error rather than a
 # silent fallback.
 #
+# Two areas, and only two areas. RCC8 is a calculus of regions: a point is not
+# a region and has no RCC8 relation to anything. A caller with a point is
+# expected to leave the RCC8 column empty rather than to reach for the nearest
+# relation that fits, and the composition table has nothing to say about such
+# a pair either.
+#
 # The distinction between TPP and NTPP is BB, whether the boundaries meet, not
 # BI. Both have A's boundary inside B somewhere, so a pattern that tests BI
 # matches them both; the first version of this file did, and called every
@@ -86,33 +92,83 @@ def of_matrix(matrix):
     raise ValueError(f"{matrix} matches several relations: {hits}")
 
 
-# The eight Simple Features predicates for two areas, as patterns, so that the
-# file records what the matrix says rather than what a library was asked.
+# The eight Simple Features predicates, as patterns, so that the file records
+# what the matrix says rather than what a library was asked.
 #
-# Two of the eight are defined by cases on the dimensions of the operands, and
-# only the area/area case belongs here. sfOverlaps between two areas is
-# T*T***T**. sfCrosses between two areas is not defined at all and is always
-# false: SFA gives it patterns for point/line, point/area, line/area and
-# line/line, and nothing for area/area. Writing T*T****** here, which is the
-# point/line reading, made nine matrices claim to cross; LeanGeospatial's
-# prover refused them, and it was right.
-SF_PATTERNS = {
+# Six of the eight read the same whatever the operands are. Two are defined by
+# cases on their dimensions, and getting those cases from the operands rather
+# than assuming a pair of areas is the whole reason this takes kinds at all.
+#
+# sfOverlaps holds only between operands of the same dimension, and its
+# pattern carries that dimension: T*T***T** for two points or two areas,
+# 1*T***T** for two lines. Between different dimensions it is undefined.
+#
+# sfCrosses is the mirror image, and it is not symmetric. SFA gives it to
+# point/line, point/area and line/area, in that argument order, plus
+# 0******** for two lines. The lower dimension has to come first: a.Crosses(b)
+# where a is an area and b is a point is not one of the listed cases and is
+# false, even though the matrix of a ward holding a point matches T*T******
+# perfectly well. Reading the pattern without the case made every ward claim
+# to cross every place inside it.
+#
+# Between two areas it is undefined and always false. Writing T*T****** there,
+# which is the point/line reading, made nine matrices claim to cross;
+# LeanGeospatial's prover refused them, and it was right.
+#
+# sfTouches is undefined between two points, which cannot meet without their
+# interiors meeting.
+KIND_DIMENSION = {"point": 0, "line": 1, "area": 2}
+
+COMMON = {
     "sfEquals":     ["T*F**FFF*"],
     "sfDisjoint":   ["FF*FF****"],
     "sfIntersects": ["T********", "*T*******", "***T*****", "****T****"],
     "sfTouches":    ["FT*******", "F**T*****", "F***T****"],
     "sfWithin":     ["T*F**F***"],
     "sfContains":   ["T*****FF*"],
-    "sfOverlaps":   ["T*T***T**"],
-    "sfCrosses":    [],
 }
 
+SF = ("sfEquals", "sfDisjoint", "sfIntersects", "sfTouches", "sfWithin",
+      "sfContains", "sfOverlaps", "sfCrosses")
 
-def simple_features(matrix):
-    """Which of the eight hold between two areas, read off the matrix.
 
-    An empty pattern list means the predicate is undefined for this pair of
-    dimensions, which SFA answers as false rather than as an error.
+def kind_of(geom):
+    """point, line or area, from a shapely geometry."""
+    name = geom.geom_type
+    if name in ("Point", "MultiPoint"):
+        return "point"
+    if name in ("LineString", "MultiLineString", "LinearRing"):
+        return "line"
+    if name in ("Polygon", "MultiPolygon"):
+        return "area"
+    raise ValueError(f"no Simple Features kind for {name}")
+
+
+def patterns(a_kind="area", b_kind="area"):
+    """The eight predicates' patterns for this pair of kinds.
+
+    An empty list means SFA leaves the predicate undefined for these operands,
+    which it answers as false rather than as an error.
     """
+    da, db = KIND_DIMENSION[a_kind], KIND_DIMENSION[b_kind]
+    out = dict(COMMON)
+    if da == db:
+        out["sfOverlaps"] = ["1*T***T**"] if da == 1 else ["T*T***T**"]
+        out["sfCrosses"] = ["0********"] if da == 1 else []
+        if da == 0:
+            out["sfTouches"] = []
+    else:
+        out["sfOverlaps"] = []
+        out["sfCrosses"] = ["T*T******"] if da < db else []
+    return {name: out[name] for name in SF}
+
+
+# Kept for the area/area case, which is what every caller wanting a constant
+# wants, and what the tests pin.
+SF_PATTERNS = patterns("area", "area")
+
+
+def simple_features(matrix, a_kind="area", b_kind="area"):
+    """Which of the eight hold between these two operands, off the matrix."""
     return {name: any(matches(matrix, p) for p in pats)
-            for name, pats in SF_PATTERNS.items()}
+            for name, pats in patterns(a_kind, b_kind).items()}

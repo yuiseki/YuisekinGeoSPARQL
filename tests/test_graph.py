@@ -21,6 +21,13 @@ SOURCES = {
         "ttl_sha256":
             "c6cfe6d2d68d0513e81317f40769d6df9eca2f84947c25f5e3cde1b52e289d4c",
     },
+    "tokyo23-poi": {
+        "dataset": "yuiseki/osm-tokyo23-src-2026-08",
+        "revision": "e60e017f6a77fa81014b11ca953ae0b2b177edaf",
+        "licence": "ODbL-1.0", "features": 7265, "positions": 73973,
+        "ttl_sha256":
+            "3ea1dc9e8506ff19fb93e79beea8f5c806e699663846384b101fad245103fe5a",
+    },
     "ne-admin0": {
         "dataset": "yuiseki/ne-admin0-10m",
         "revision": "d1d37a11992230933819fdb3f363dc919bb547a5",
@@ -39,12 +46,18 @@ SOURCES = {
 
 # With every source loaded.
 ALL = {
-    "features": 4877,
-    "ordered_pairs": 23780252,
-    "rows_written": 36694,
+    "features": 12142,
+    "ordered_pairs": 147416022,
+    # Not every pair is formed. tokyo23-poi is compared against the wards and
+    # against nothing else, so the pairs that were never looked at are counted
+    # apart from the pairs that were looked at and found disjoint.
+    "pairs_compared": 24114442,
+    "rows_written": 51436,
     "relations_sha256":
-        "05a49721005af782c13a9e913a4f0b701703c0e25718feb0adeaedde655d4a4a",
-    "by_rcc8": {"EC": 26900, "EQ": 58, "NTPP": 1466, "NTPPi": 1466, "PO": 2644, "TPP": 2080, "TPPi": 2080},
+        "6a3354d9928e6eab36e787520aed5946e7b8842d3bf81df861f339b2adb05640",
+    "by_rcc8": {"(not two regions)": 6898, "EC": 26906, "EQ": 58,
+                "NTPP": 5134, "NTPPi": 5134, "PO": 3140,
+                "TPP": 2083, "TPPi": 2083},
 }
 
 
@@ -111,6 +124,7 @@ def test_the_relations_file_is_byte_for_byte_what_it_was(manifest, built):
     rel = manifest["relations"]
     assert rel["features"] == ALL["features"]
     assert rel["ordered_pairs"] == ALL["ordered_pairs"]
+    assert rel["pairs_compared"] == ALL["pairs_compared"]
     assert rel["rows_written"] == ALL["rows_written"]
     assert rel["by_rcc8"] == ALL["by_rcc8"]
     assert rel["sha256"] == ALL["relations_sha256"]
@@ -123,8 +137,13 @@ def test_only_non_disjoint_pairs_are_written(manifest, relations):
     and a reader that does not know this will think the data is missing.
     """
     rel = manifest["relations"]
-    assert rel["omitted_as_disjoint"] == rel["ordered_pairs"] - rel["rows_written"]
+    assert rel["omitted_as_disjoint"] == rel["pairs_compared"] - rel["rows_written"]
     assert rel["omitted_matrix"] == "FF2FF1212"
+    # A point has no boundary, so a point that misses an area does not spell
+    # its disjointness the way two areas do. A reader filling in absent pairs
+    # with the area/area matrix would give every place a boundary.
+    assert rel["omitted_matrix_by_kinds"]["point/area"] == "FF0FFF212"
+    assert rel["omitted_matrix_by_kinds"]["area/point"] == "FF2FF10F2"
     assert not any(r["rcc8_raw"] == "DC" for r in relations.values())
 
 
@@ -139,6 +158,7 @@ def test_the_raw_and_normalized_readings_are_in_different_columns(manifest):
                  "norm_method", "norm_tolerance", "rcc8_norm"):
         assert name in columns, name
     for name in ("subject_source", "subject_layer", "subject_id",
+                 "subject_kind", "object_kind",
                  "object_source", "object_layer", "object_id"):
         assert name in columns, name
 
@@ -152,10 +172,21 @@ def test_every_row_states_where_both_features_came_from(relations):
 
 
 def test_the_rcc8_reading_is_one_of_the_eight(relations):
+    """And empty exactly when the pair is not two regions.
+
+    RCC8 is a calculus of regions. A point is not a region, so a pair with a
+    point in it has no RCC8 relation, and the column is empty rather than
+    holding the nearest relation that fits. Filling it would put every place
+    mapped as a node into the composition table, where nothing has been proved
+    about it.
+    """
     eight = {"DC", "EC", "PO", "EQ", "TPP", "NTPP", "TPPi", "NTPPi"}
-    seen = {r["rcc8_raw"] for r in relations.values()}
-    assert seen <= eight, seen - eight
-    assert "" not in seen, "a matrix RCC8 could not classify"
+    for r in relations.values():
+        regions = r["subject_kind"] == "area" and r["object_kind"] == "area"
+        if regions:
+            assert r["rcc8_raw"] in eight, r
+        else:
+            assert r["rcc8_raw"] == "", r
 
 
 def test_the_converse_relations_balance(manifest, built):
@@ -170,13 +201,55 @@ def test_the_converse_relations_balance(manifest, built):
     assert by["NTPP"] == by["NTPPi"]
 
 
-def test_crossing_is_never_claimed_between_two_areas(relations):
-    """SFA defines sfCrosses for point/line, point/area, line/area and
-    line/line, and not for area/area. Claiming it here made nine matrices
-    disagree with LeanGeospatial's prover, which was right to refuse them.
+def test_crossing_is_never_claimed(relations):
+    """SFA gives sfCrosses to point/line, point/area and line/area, in that
+    argument order, plus line/line. Two areas are not a case, and neither is
+    an area against a point.
+
+    Both readings have been wrong here. Applying the point/line pattern to two
+    areas made nine matrices claim to cross, and LeanGeospatial's prover
+    refused them. Applying it without the argument order made every ward claim
+    to cross every place inside it, which the matrix matches perfectly well
+    and the standard does not allow.
     """
     for r in relations.values():
         assert "sfCrosses" not in r["sf_raw"].split(","), r
+
+
+def test_a_place_is_within_the_ward_it_is_in(relations, built):
+    """The question this layer was added for.
+
+    Sensoji, mapped as an area, against Taito. The ward contains it and it is
+    within the ward, and neither of them overlaps or crosses the other.
+    """
+    require(built, "tokyo23")
+    require(built, "tokyo23-poi")
+    taito, sensoji = "ward-1758888", "poi-Q615183"
+    down = relations[(sensoji, taito)]
+    up = relations[(taito, sensoji)]
+    assert "sfWithin" in down["sf_raw"].split(",")
+    assert "sfContains" in up["sf_raw"].split(",")
+    assert down["subject_layer"] == "tokyo23-poi"
+    for r in (down, up):
+        held = r["sf_raw"].split(",")
+        assert "sfOverlaps" not in held and "sfCrosses" not in held, r
+
+
+def test_places_are_compared_against_wards_and_nothing_else(manifest, relations,
+                                                            built):
+    """The restriction that keeps this layer affordable, as a fact about the
+    output rather than as an intention in the source.
+
+    7,288 places against each other is a different dataset with a different
+    cost. Without the restriction the file would also carry every place
+    against every country, which is 1.9 million pairs of nothing.
+    """
+    require(built, "tokyo23-poi")
+    assert manifest["relations"]["layers_compared"]["tokyo23-poi"] == ["tokyo23"]
+    for r in relations.values():
+        layers = {r["subject_layer"], r["object_layer"]}
+        if "tokyo23-poi" in layers:
+            assert layers == {"tokyo23-poi", "tokyo23"}, r
 
 
 def test_a_ward_is_inside_the_country_the_other_sources_draw(relations, built):
