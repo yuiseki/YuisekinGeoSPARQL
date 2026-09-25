@@ -4,3 +4,5 @@ __pycache__/
 # Everything the build produces. All of it is derived from the pinned dataset
 # revision and the pinned images, so it is rebuilt rather than committed.
 /data/
+
+.env

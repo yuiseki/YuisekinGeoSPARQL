@@ -20,6 +20,7 @@ import collections
 import hashlib
 import json
 import os
+import re
 import sys
 
 import sources as S
@@ -108,7 +109,7 @@ def load_tokyo23(path, spec):
                  % abs(osm_id)]
         if p["tags"].get("wikidata"):
             props.append("owl:sameAs wd:%s" % p["tags"]["wikidata"])
-        out.append({"key": "ward-%d" % abs(osm_id), "sort": osm_id,
+        out.append({"key": safe_key("ward-%d" % abs(osm_id)), "sort": osm_id,
                     "label": labels, "geometry": geom, "props": props,
                     "parts": p["rows"], "name": p["name"]})
     return out
@@ -148,7 +149,7 @@ def load_ne_admin0(path, spec):
             props.append("owl:sameAs wd:%s" % row["WIKIDATAID"])
         # ADM0_A3 is unique in this layer and stable across versions, which
         # the row order is not.
-        key = "country-%s" % (row["ADM0_A3"] or row["NAME"]).replace(" ", "_")
+        key = safe_key("country-%s" % (row["ADM0_A3"] or row["NAME"]))
         out.append({"key": key, "sort": key, "label": labels, "geometry": geom,
                     "props": props, "parts": 1, "name": row["NAME"]})
     out.sort(key=lambda r: r["sort"])
@@ -161,11 +162,11 @@ def load_ne_admin1(path, spec):
     from shapely import wkb
     from shapely.geometry import MultiPolygon
 
-    t = pq.read_table(path, columns=["name", "name_en", "adm0_a3", "adm1_code",
-                                     "iso_3166_2", "wikidataid", "type_en",
-                                     "admin", "geometry", "geometrySource",
-                                     "datasetVersion", "boundaryView",
-                                     "adminLevel"])
+    t = pq.read_table(path, columns=["name", "name_en", "name_ja", "adm0_a3",
+                                     "adm1_code", "iso_3166_2", "wikidataid",
+                                     "type_en", "admin", "geometry",
+                                     "geometrySource", "datasetVersion",
+                                     "boundaryView", "adminLevel"])
     out = []
     for row in t.to_pylist():
         geom = wkb.loads(bytes(row["geometry"]))
@@ -176,6 +177,11 @@ def load_ne_admin1(path, spec):
             labels.append((row["name_en"], "en"))
         elif row.get("name"):
             labels.append((row["name"], "en"))
+        # 4,589 of 4,596 carry one. Without it a Japanese sentence about a
+        # Japanese prefecture has no name to use, and the corpus comes out
+        # 99.4% English from data that is not.
+        if row.get("name_ja"):
+            labels.append((row["name_ja"], "ja"))
         props = ['gs:iso3166_2 "%s"' % escape(row["iso_3166_2"] or ""),
                  'gs:adm1Code "%s"' % escape(row["adm1_code"] or ""),
                  'gs:parentAdm0A3 "%s"' % escape(row["adm0_a3"] or ""),
@@ -185,7 +191,7 @@ def load_ne_admin1(path, spec):
                  'gs:adminLevel "%s"' % escape(row["adminLevel"] or "")]
         if (row.get("wikidataid") or "").startswith("Q"):
             props.append("owl:sameAs wd:%s" % row["wikidataid"])
-        key = "state-%s" % (row["adm1_code"] or row["iso_3166_2"]).replace(" ", "_")
+        key = safe_key("state-%s" % (row["adm1_code"] or row["iso_3166_2"]))
         out.append({"key": key, "sort": key, "label": labels, "geometry": geom,
                     "props": props, "parts": 1,
                     "name": row["name_en"] or row["name"] or key})
@@ -215,6 +221,18 @@ def to_crs84(geom, source_crs):
         tr = Transformer.from_crs(source_crs, "EPSG:4326", always_xy=True)
         geom = transform(lambda x, y, z=None: tr.transform(x, y), geom)
     return set_precision(geom, 10 ** -PRECISION)
+
+
+# A Turtle prefixed name's local part takes letters, digits, underscore and
+# hyphen safely. Natural Earth's adm1_code holds things like "AIA+99?" for a
+# feature it has no code for, and Jena reads the "+99" as an integer and
+# refuses the whole file. Everything else becomes an underscore.
+UNSAFE = re.compile(r"[^A-Za-z0-9_-]")
+
+
+def safe_key(text):
+    """A feature id that a Turtle parser will accept."""
+    return UNSAFE.sub("_", text)
 
 
 def escape(s):

@@ -5,4 +5,4 @@ WORKDIR /tests
 COPY requirements.txt .
 RUN pip install --no-cache-dir --disable-pip-version-check -r requirements.txt
 COPY . .
-ENTRYPOINT ["python", "-m", "pytest", "-q", "--tb=short"]
+ENTRYPOINT ["python", "-m", "pytest", "-q", "--tb=short", "-c", "pytest.ini"]

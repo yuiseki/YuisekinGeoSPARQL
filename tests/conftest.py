@@ -50,15 +50,16 @@ def built(manifest):
 
 
 @pytest.fixture(scope="session")
-def relations(built):
-    """What GEOS computed at build time, per source, keyed by the pair."""
-    out = {}
-    for key, s in built.items():
-        path = os.path.join(DATA, s["relations_file"])
-        with open(path, encoding="utf-8") as f:
-            rows = list(csv.DictReader(f, delimiter="\t"))
-        out[key] = {(r["a"], r["b"]): r for r in rows}
-    return out
+def relations(manifest):
+    """What GEOS computed at build time, keyed by the pair of feature ids.
+
+    One file over every source, not one per source: the cross-layer pairs are
+    the point, and a per-source file cannot hold them.
+    """
+    path = os.path.join(DATA, manifest["relations"]["file"])
+    with open(path, encoding="utf-8") as f:
+        rows = list(csv.DictReader(f, delimiter="\t"))
+    return {(r["subject_id"], r["object_id"]): r for r in rows}
 
 
 def require(built, key):

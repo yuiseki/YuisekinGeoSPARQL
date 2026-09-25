@@ -1,8 +1,23 @@
 # Attribution and licence
 
-## The data
+## Which licence applies depends on what you load
 
-This repository serves a Derivative Database of OpenStreetMap.
+`SOURCES` decides, and the licence of the result is the strictest of the
+sources in it. `manifest.json` records the answer for the graph that was
+actually built.
+
+| loaded | licence | share-alike | attribution |
+|---|---|---|---|
+| `ne-admin0`, `ne-admin1` | public domain | no | not required |
+| anything including `tokyo23` | ODbL-1.0 | yes | required |
+
+Share-alike is contagious. One ODbL source makes the whole derived database
+ODbL whatever else is in it, so there is no combination in which Natural
+Earth's terms soften OpenStreetMap's.
+
+## OpenStreetMap, when tokyo23 is loaded
+
+This repository then serves a Derivative Database of OpenStreetMap.
 
 > (c) OpenStreetMap contributors, available under the Open Database License.
 > https://www.openstreetmap.org/copyright
@@ -23,9 +38,9 @@ which is what this file does.
 ODbL's share-alike reaches a Derivative Database, not only a copy. Everything
 this repository produces is one:
 
-    data/tokyo23.ttl       the wards as RDF and WKT
-    data/relations.tsv     the DE-9IM matrix of every ordered pair
-    data/manifest.json     counts and digests of the above
+    data/*.ttl             the features as RDF and WKT
+    data/relations.tsv     the DE-9IM matrix of every pair that is not disjoint
+    data/manifest.json     counts, digests, and the licence of the result
 
 So are the answers the endpoint gives. A set of statements generated from
 those answers, or a corpus containing them, carries ODbL too.
@@ -34,6 +49,19 @@ This matters when mixing sources. Wikidata is CC0 and OurAirports is public
 domain; a containment asserted by Wikidata's P131 can be used without
 inheriting anything. A containment *computed from these polygons* cannot. Keep
 the two apart rather than discovering later that a whole corpus went ODbL.
+
+## Natural Earth, always
+
+Natural Earth places its data in the public domain. No permission is needed
+and no attribution is required, though the project asks for credit where
+practical:
+
+> Made with Natural Earth. Free vector and raster map data @
+> naturalearthdata.com
+
+The frozen copies are
+[`yuiseki/ne-admin0-10m`](https://huggingface.co/datasets/yuiseki/ne-admin0-10m)
+at version 5.1.1, admin-0 countries and admin-1 states and provinces.
 
 ## The code
 

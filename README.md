@@ -1,146 +1,208 @@
 # YuisekinGeoSPARQL
 
-A GeoSPARQL endpoint over the 23 special wards of Tokyo, which gives the same
-answers today as it will next year.
+A GeoSPARQL endpoint over published, pinned geographic data, which gives the
+same answers today as it will next year.
 
 ```bash
 printf 'UID=%s\nGID=%s\n' "$(id -u)" "$(id -g)" > .env
 docker compose up --build
 ```
 
-That builds the graph, starts the server and runs the tests. Nothing else is
+That builds the graphs, starts the server and runs the tests. Nothing else is
 needed and nothing is fetched afterwards.
 
-The `.env` line makes the builder write as you rather than as root. Without it
-`data/` ends up owned by root and removing it needs privileges that starting
-from a clean checkout should not require.
-
 ```bash
-curl -s --get http://localhost:3030/tokyo23/sparql \
+curl -s --get http://localhost:3030/geo/sparql \
   --data-urlencode 'query=
     PREFIX geo:  <http://www.opengis.net/ont/geosparql#>
     PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
-    PREFIX t23s: <https://yuiseki.net/geosparql/tokyo23/schema#>
-    SELECT ?name WHERE {
-      ?a rdfs:label "台東区"@ja ; geo:sfTouches ?b .
-      ?b a t23s:Ward ; rdfs:label ?name .
-      FILTER(?a != ?b) FILTER(lang(?name) = "ja")
-    } ORDER BY ?name'
+    PREFIX gs:   <https://yuiseki.net/geosparql/schema#>
+    SELECT ?country WHERE {
+      ?w rdfs:label "台東区"@ja .
+      ?c a gs:Country ; rdfs:label ?country ; geo:sfContains ?w .
+      FILTER(lang(?country) = "en")
+    }'
 ```
 
-    中央区  千代田区  墨田区  文京区  荒川区
+    Japan
+
+The ward on the left is OpenStreetMap; the country on the right is Natural
+Earth. Different sources, different licences, different scales, one
+topological question.
+
+## What is loaded
+
+| source | features | from | licence |
+|---|---|---|---|
+| `tokyo23` | 23 wards | [`yuiseki/osm-tokyo23-src-2026-08`](https://huggingface.co/datasets/yuiseki/osm-tokyo23-src-2026-08) | ODbL-1.0 |
+| `ne-admin0` | 258 countries | [`yuiseki/ne-admin0-10m`](https://huggingface.co/datasets/yuiseki/ne-admin0-10m) | public domain |
+| `ne-admin1` | 4,596 states | the same dataset, admin-1 subset | public domain |
+
+`SOURCES` picks what to load, and with it what the result carries:
+
+```bash
+SOURCES=ne-admin0,ne-admin1 docker compose up --build   # public domain
+SOURCES=tokyo23             docker compose up --build   # ODbL
+docker compose up --build                               # all three, so ODbL
+```
+
+Share-alike is contagious: one ODbL source makes the whole derived database
+ODbL whatever else is in it. The builder works that out from the sources it
+was given and writes the answer into `manifest.json`, so a reader of the
+output does not have to.
 
 ## Why it repeats
 
 Reproducible is easy to claim and easy to lose. Each of these was a decision:
 
-**The dataset is pinned to a commit, not a branch.**
-`yuiseki/osm-tokyo23-src-2026-08` at
-`e60e017f6a77fa81014b11ca953ae0b2b177edaf`. A branch would make the answer
-depend on the day.
+**Every dataset is pinned to a commit, not a branch.** A branch makes the
+answer depend on the day.
 
 **Nothing reaches the network at query time.** No Overpass, no live OSM, no
 federated `SERVICE`. A test asserts that a query naming an external endpoint
 fails rather than quietly succeeding on someone else's data.
 
-**Both images are pinned by digest** and Jena is pinned by sha256, checked at
-build time. Python dependencies are exact versions; PyPI will not re-upload a
-version that exists, so a pinned version is an immutable artefact.
+**Both images are pinned by digest** and Apache Jena is pinned by sha256,
+checked at build time. Python dependencies are exact versions; PyPI will not
+re-upload a version that exists, so a pinned version is an immutable artefact.
 
 **Rows are sorted and coordinates are rounded** before serialisation, to seven
 decimals, about a centimetre. Neither Parquet's row order nor a different GEOS
 build can move a byte.
 
-**The output is checksummed and the checksum is asserted.** `tokyo23.ttl` is
-540,077 bytes with sha256 `7c7d3835…`; the tests fail if it changes. Changing
-the revision is then a visible act rather than a silent drift.
+**The output is checksummed and the checksum is asserted.** The tests fail if
+a graph changes, so moving a revision is a visible act rather than a silent
+drift.
 
 ## What comes out
 
-| File | |
+    data/tokyo23.ttl        23 wards as geo:Feature with geo:asWKT
+    data/ne-admin0.ttl      258 countries
+    data/ne-admin1.ttl      4,596 states
+    data/relations.tsv      every pair of features that is not disjoint
+    data/manifest.json      revisions, counts, digests, and the licence
+
+The endpoint is at `/geo/sparql`; `/geo/query` and `/geo/` are the same thing.
+
+### relations.tsv
+
+One file over every feature from every source, not one per source. The
+cross-layer pairs are the point: a ward inside a country, a state inside the
+country it names.
+
+| column | |
 |---|---|
-| `data/tokyo23.ttl` | 23 wards as `geo:Feature` with `geo:asWKT`, 22,307 positions |
-| `data/relations.tsv` | the DE-9IM matrix and eight predicates for all 506 ordered pairs |
-| `data/manifest.json` | the revision, the counts, the digests, the Wikidata id of each ward |
+| `subject_source` `subject_layer` `subject_id` `subject_name` | where the left side came from |
+| `object_source` `object_layer` `object_id` `object_name` | and the right |
+| `de9im_raw` | the DE-9IM matrix |
+| `sf_raw` | which Simple Features predicates hold, read off the matrix |
+| `rcc8_raw` | the RCC8 relation, read off the same matrix |
+| `outside_area_deg2` `outside_ratio` | how far the subject leaves the object |
+| `norm_method` `norm_tolerance` `rcc8_norm` | empty unless `--normalize` was given |
 
-The endpoint is at `/tokyo23/sparql`, and `/tokyo23/query` and `/tokyo23/` are
-the same thing.
+The raw columns are observations. The normalized ones are a judgement, and
+carry the method and the tolerance that produced them, so a reader can
+disagree with the judgement without losing the observation. They are never
+mixed.
 
-## What the wards turn out to be
+Only pairs that are **not** disjoint are written. 4,877 features make
+23,780,252 ordered pairs and 36,694 of them are anything other than `DC`. A
+pair absent from the file is `DC`, matrix `FF2FF1212`.
 
-| predicate | ordered pairs |
+| RCC8 | pairs |
 |---|---|
-| `sfDisjoint` | 392 |
-| `sfIntersects` | 114 |
-| `sfTouches` | 114 |
-| `sfEquals`, `sfWithin`, `sfContains`, `sfOverlaps`, `sfCrosses` | 0 |
+| `EC` | 26,900 |
+| `PO` | 2,644 |
+| `TPP` / `TPPi` | 2,080 each |
+| `NTPP` / `NTPPi` | 1,466 each |
+| `EQ` | 58 |
 
-`sfIntersects` and `sfTouches` are the same 114 pairs, which is the shape an
-administrative partition should have: wards meet along boundaries and share no
-area. 114 ordered pairs is 57 adjacencies. If those two ever differ, two wards
-have begun to overlap, and a test says so.
+## Checking it against a proof
 
-That they are equal also shows the rounding did no harm. Adjacent wards share
-the same OSM ways, so their rings carry identical coordinates; rounding both
-with the same function leaves them identical, and `sfTouches` stays exact. A
-reprojection done carelessly would have turned every adjacency into a hairline
-gap and every `sfTouches` into `sfDisjoint`, with nothing in the totals to say
-so.
+The counts are not compared against numbers somebody wrote down. The builder
+computes with GEOS through shapely; the endpoint computes with JTS inside
+Jena; the tests compare the two, pair by pair, for all eight Simple Features
+predicates. Two implementations of one standard agreeing is evidence. One
+agreeing with itself is not.
 
-## How it is checked
-
-The counts are not compared against a number somebody wrote down. The builder
-computes every relation with GEOS through shapely and writes
-`relations.tsv`; the endpoint computes with JTS inside Jena. The tests
-compare the two, pair by pair, for all seven predicates. Two implementations
-of one standard agreeing is evidence. One implementation agreeing with itself
-is not.
-
-`geof:relate` is checked the same way: for each adjacent pair, the DE-9IM
-pattern GEOS recorded is handed back to the endpoint and has to be accepted.
+Beyond that, [LeanGeospatial](https://github.com/yuiseki/LeanGeospatial) has
+machine-checked proofs of the RCC8 weak composition table and of the DE-9IM
+patterns behind the Simple Features relations. `src/prover_requests.py` in
+[geo-triples-tokyo23](https://github.com/yuiseki/geo-triples-tokyo23) turns
+`relations.tsv` into the JSON Lines its prover reads. It used to live here as
+`builder/triples.py`, and moved because it reads this repository's output
+rather than helping to produce it, which is the line the builder image draws:
 
 ```bash
-docker compose run --rm tests
+python3 src/prover_requests.py \
+    --relations ../YuisekinGeoSPARQL/data/relations.tsv \
+    --out data/prover/triples.jsonl \
+    --claims-out data/prover/claims.jsonl --limit 0
+
+lean-geospatial-prover < data/prover/triples.jsonl > verdicts.jsonl
 ```
+
+Each request states A r B and B s C and asks what holds between A and C. The
+prover answers from the table it has proved; the observed A-C relation rides
+along in an `observed` key it ignores, so a checker can compare without the
+prover being told the answer.
+
+Last run, over every source:
+
+| | |
+|---|---|
+| triples | 699,002 |
+| the table allows the observed relation | 646,290 |
+| the table allows only one, and it is the observed one | 52,712 |
+| contradictions | 0 |
+| cells of the 64 exercised | 27 |
+
+and for the DE-9IM claims, 144 distinct matrix and predicate pairs: 38
+entailed, 106 refuted, nothing in disagreement.
 
 ## Two things about the source data
 
-**練馬区 arrives as two rows.** osm2pgsql splits a relation's parts, and one of
-Nerima's is 2,696 square metres: the exclave at 西大泉町, a single lot
+**練馬区 arrives as two rows.** osm2pgsql splits a relation's parts, and one
+of Nerima's is 2,696 square metres: the exclave at 西大泉町, a single lot
 surrounded by Saitama. Dropping the small row would make the ward a `Polygon`
 and lose a piece of Tokyo. Keeping the rows apart would make 23 wards into 24
 features. They are merged, and the manifest records that it happened.
 
-**和光市 is in the extract and is not a ward.** It is `admin_level=7` and sits
-on the edge, so the extraction kept it whole. The rule is `admin_level=7` *and*
-a name ending in 区, which is what the source dataset's own provenance states
-and what this repository applies rather than trusts.
+**40.7% of states leave their own country's polygon.** Natural Earth builds
+admin-0 and admin-1 to agree, and they do: every one of the 4,596 states names
+a country that exists, with no orphans. But the two layers draw the same
+border twice, independently, and the vertices do not land in the same places.
+The median area outside is zero. Five states differ by more than 10% and all
+five are islands or a divided country: Coral Sea Islands, Alo, Niuas, Nicosia,
+Pohnpei.
 
-## Geometry, and what a later formal check would read
+This is why `outside_ratio` is a column, and why the normalized reading lives
+in its own. As an observation the relation is `PO`; as a statement about
+geography it is containment. The composition check above runs on the raw
+reading and passes; a geographical claim should read the normalized one.
 
-The Parquet geometry is EPSG:3857, as osm2pgsql writes it. GeoSPARQL's default
-CRS is CRS84, longitude then latitude on WGS84, which is what a literal without
-a CRS URI means. The builder reprojects once, with one transformer, and rounds.
+## What depends on this
 
-`relations.tsv` carries the DE-9IM matrix itself, not only the eight readings
-of it. The matrix is the primitive: `sfTouches` is `FF2F11212` and several
-other patterns, and a formal treatment works on the matrix. Each row also
-carries both OSM ids, so a relation can be traced back to the geometry it came
-from, and each ward in the graph carries `owl:sameAs` to its Wikidata item.
-
-Nothing here talks to
-[LeanGeospatial](https://github.com/yuiseki/LeanGeospatial) yet. This is what
-it would consume.
+[`yuiseki/geo-triples-tokyo23`](https://github.com/yuiseki/geo-triples-tokyo23)
+is built from `relations.tsv` and nothing else. Its claim to be reproducible
+rests on this repository being reproducible, so this one exists partly to be
+checked: anyone who wants to verify that dataset starts here, runs
+`docker compose up --build`, and compares the digests in `manifest.json`
+against the ones that dataset records.
 
 ## Layout
 
-    builder/     downloads the pinned revision, writes the graph and the relations
+    builder/     downloads the pinned revisions, writes the graphs and relations.tsv
+    builder/rcc8.py    reads RCC8 and Simple Features off a DE-9IM matrix, by pattern
     fuseki/      Apache Jena Fuseki 6.2.0, one jar, with a GeoSPARQL assembler
-    tests/       the graph is what it says, and Jena agrees with GEOS
+    tests/       the graphs are what they say, and Jena agrees with GEOS
 
 ## Licence
 
-Code MIT. The data is ODbL from OpenStreetMap, and so is everything this
-produces, including the answers the endpoint gives. See
-[ATTRIBUTION.md](ATTRIBUTION.md), which also explains why that matters when
-mixing this with CC0 sources.
+Code MIT. The data is whatever the loaded sources carry, and the manifest says
+which. With `tokyo23` loaded that is ODbL from OpenStreetMap, and so is
+everything this produces, including the answers the endpoint gives. With only
+the Natural Earth sources it is public domain.
+
+See [ATTRIBUTION.md](ATTRIBUTION.md), which explains why that matters when
+mixing sources.

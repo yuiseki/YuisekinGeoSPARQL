@@ -10,36 +10,104 @@ import pytest
 
 from conftest import require
 
-PREDICATES = ("sfEquals", "sfDisjoint", "sfIntersects", "sfTouches",
+# sfDisjoint is not among them. relations.tsv omits disjoint pairs, so the
+# file has nothing to compare the endpoint's answer against; what it does have
+# is checked by test_disjoint_is_the_pairs_the_file_leaves_out.
+PREDICATES = ("sfEquals", "sfIntersects", "sfTouches",
               "sfWithin", "sfContains", "sfOverlaps", "sfCrosses")
 
+# Only tokyo23 is small enough for the default run. Enumerating every pair of
+# 258 countries through Jena costs about 65 seconds per predicate whether the
+# subject is bound or not: 258 bound queries at 0.29s each come to the same as
+# one unbound query, because the cost is 66,306 polygon comparisons either
+# way. Seven predicates make that eight minutes. 23 wards take under a second.
+SMALL = ("tokyo23",)
+
 # Which feature class each source puts in the graph.
-CLASS = {"tokyo23": "Ward", "ne-admin0": "Country"}
+CLASS = {"tokyo23": "Ward", "ne-admin0": "Country", "ne-admin1": "State"}
 
 
 def pairs_from(ask, source, predicate):
-    """Every ordered pair of distinct features the endpoint relates."""
-    rows = ask("""
-        SELECT ?a ?b WHERE {
-          ?fa a gs:%s ; geo:%s ?fb .
-          ?fb a gs:%s .
-          FILTER(?fa != ?fb)
-          BIND(REPLACE(STR(?fa), "^.*/", "") AS ?a)
-          BIND(REPLACE(STR(?fb), "^.*/", "") AS ?b)
-        }""" % (CLASS[source], predicate, CLASS[source]))
-    return {(r["a"], r["b"]) for r in rows}
+    """Every ordered pair of distinct features the endpoint relates.
+
+    One query per subject rather than one for the whole class. With both
+    sides unbound, Jena's property function cannot use the spatial index and
+    compares every pair: 23 wards answer in 0.37 seconds and 258 countries in
+    64, which is not the shape of a quadratic. Binding the subject takes each
+    of the 258 to about 0.03.
+    """
+    subjects = ask("SELECT ?f WHERE { ?f a gs:%s }" % CLASS[source])
+    pairs = set()
+    for row in subjects:
+        fa = row["f"]
+        rows = ask("""
+            SELECT ?a ?b WHERE {
+              <%s> geo:%s ?fb .
+              ?fb a gs:%s .
+              FILTER(<%s> != ?fb)
+              BIND("%s" AS ?a)
+              BIND(REPLACE(STR(?fb), "^.*/", "") AS ?b)
+            }""" % (fa, predicate, CLASS[source], fa,
+                    fa.rsplit("/", 1)[-1]))
+        pairs.update((r["a"], r["b"]) for r in rows)
+    return pairs
+
+
+def compare(ask, relations, source, predicate):
+    theirs = pairs_from(ask, source, predicate)
+    ours = {(a, b) for (a, b), v in relations.items()
+            if v["subject_source"] == source and v["object_source"] == source
+            and predicate in v["sf_raw"].split(",")}
+    assert theirs == ours, {
+        "source": source, "predicate": predicate,
+        "only jena": sorted(theirs - ours)[:5],
+        "only geos": sorted(ours - theirs)[:5],
+    }
 
 
 @pytest.mark.parametrize("predicate", PREDICATES)
 def test_jena_and_geos_agree_on_every_pair(ask, relations, built, predicate):
+    """Within each source. Jena answers with JTS, the file was written with
+    GEOS, and two implementations of one standard agreeing is evidence. One
+    agreeing with itself is not.
+
+    sfCrosses is never true between two areas, so both sides say nothing and
+    the comparison is still worth making: it is where the mistake was.
+    """
+    for source in SMALL:
+        if source in built:
+            compare(ask, relations, source, predicate)
+
+
+@pytest.mark.full
+@pytest.mark.parametrize("predicate", PREDICATES)
+def test_jena_and_geos_agree_over_every_source(ask, relations, built, predicate):
+    """The same comparison over ne-admin1 as well: 4,596 features, 21,946
+    pairs among themselves. This is the twelve minutes, and it is the check
+    that caught sfCrosses being read with the point/line pattern.
+    """
     for source in built:
-        theirs = pairs_from(ask, source, predicate)
-        ours = {k for k, v in relations[source].items() if v[predicate] == "1"}
-        assert theirs == ours, {
-            "source": source, "predicate": predicate,
-            "only jena": sorted(theirs - ours)[:5],
-            "only geos": sorted(ours - theirs)[:5],
-        }
+        if source not in SMALL:
+            compare(ask, relations, source, predicate)
+
+
+def test_disjoint_is_the_pairs_the_file_leaves_out(ask, relations, built, manifest):
+    """The one predicate the file cannot be compared against directly.
+
+    4,877 features make 23.8 million ordered pairs and all but 36,694 are DC,
+    so they are omitted rather than written. What can be checked is the
+    complement: within one source, the pairs Jena calls disjoint are exactly
+    the ones the file does not mention.
+    """
+    for source in SMALL:
+        if source not in built:
+            continue
+        n = built[source]["features"]
+        theirs = pairs_from(ask, source, "sfDisjoint")
+        written = {(a, b) for (a, b), v in relations.items()
+                   if v["subject_source"] == source and v["object_source"] == source}
+        assert len(theirs) + len(written) == n * (n - 1), source
+        assert not (theirs & written), sorted(theirs & written)[:5]
 
 
 def test_the_feature_counts_match_the_manifest(ask, built):
@@ -53,14 +121,26 @@ def test_touching_and_intersecting_are_the_same_set(ask, built):
     """Administrative areas of one level partition their parent: they meet
     along boundaries and share no area. If these ever differ, two of them have
     begun to overlap, which is a fact about the data worth being told.
+
+    ne-admin1 is excluded: its features come from 258 separate partitions and
+    neighbouring countries' states do overlap at the seams.
     """
-    for source in built:
+    for source in SMALL:
+        if source not in built:
+            continue
         assert (pairs_from(ask, source, "sfTouches")
                 == pairs_from(ask, source, "sfIntersects")), source
 
 
-def test_nothing_contains_or_overlaps_its_own_kind(ask, built):
-    for source in built:
+def test_an_administrative_partition_never_contains_its_own_kind(ask, built):
+    """True of one level of one partition. Not true of ne-admin1, whose
+    features come from 258 separate partitions: 40.7% of states leave their
+    own country's polygon, by an area whose median is zero, because the same
+    border was drawn twice and independently.
+    """
+    for source in SMALL:
+        if source not in built:
+            continue
         assert pairs_from(ask, source, "sfWithin") == set(), source
         assert pairs_from(ask, source, "sfContains") == set(), source
         assert pairs_from(ask, source, "sfOverlaps") == set(), source
@@ -127,8 +207,12 @@ def test_the_matrix_relate_confirms_is_the_one_geos_recorded(ask, relations, bui
     the file is what a formal check would have believed.
     """
     for source in built:
-        adjacent = [(k, v) for k, v in relations[source].items()
-                    if v["sfTouches"] == "1"]
+        if source not in SMALL:
+            continue
+        adjacent = [(k, v) for k, v in relations.items()
+                    if v["subject_source"] == source
+                    and v["object_source"] == source
+                    and "sfTouches" in v["sf_raw"].split(",")]
         assert adjacent, source
         for (a, b), row in adjacent[:8]:
             answer = ask("""
@@ -138,10 +222,11 @@ def test_the_matrix_relate_confirms_is_the_one_geos_recorded(ask, relations, bui
                   FILTER(REPLACE(STR(?fa), "^.*/", "") = "%s")
                   FILTER(REPLACE(STR(?fb), "^.*/", "") = "%s")
                   BIND(geof:relate(?wa, ?wb, "%s") AS ?ok)
-                }""" % (CLASS[source], CLASS[source], a, b, row["de9im"]))
+                }""" % (CLASS[source], CLASS[source], a, b, row["de9im_raw"]))
             assert answer, ("no such pair in the graph", source, a, b)
             assert answer[0]["ok"] == "true", (row["a_name"], row["b_name"],
                                                row["de9im"])
+
 
 
 def test_a_query_cannot_reach_outside(ask):
