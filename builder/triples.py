@@ -130,6 +130,12 @@ def main():
                     "id": f"c{n:07d}",
                     "matrix": r["de9im_raw"],
                     "claim": claim,
+                    # sfOverlaps and sfCrosses are defined by cases on the
+                    # dimensions of the operands, so the prover asks which
+                    # kinds these are rather than guessing. Everything in
+                    # this file is an administrative area.
+                    "a_kind": "area",
+                    "b_kind": "area",
                     "observed": column in held,
                 }, ensure_ascii=False) + "\n")
                 n += 1

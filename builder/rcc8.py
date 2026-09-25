@@ -86,8 +86,16 @@ def of_matrix(matrix):
     raise ValueError(f"{matrix} matches several relations: {hits}")
 
 
-# The eight Simple Features predicates, also as patterns, so that the file
-# records what the matrix says rather than what a library was asked.
+# The eight Simple Features predicates for two areas, as patterns, so that the
+# file records what the matrix says rather than what a library was asked.
+#
+# Two of the eight are defined by cases on the dimensions of the operands, and
+# only the area/area case belongs here. sfOverlaps between two areas is
+# T*T***T**. sfCrosses between two areas is not defined at all and is always
+# false: SFA gives it patterns for point/line, point/area, line/area and
+# line/line, and nothing for area/area. Writing T*T****** here, which is the
+# point/line reading, made nine matrices claim to cross; LeanGeospatial's
+# prover refused them, and it was right.
 SF_PATTERNS = {
     "sfEquals":     ["T*F**FFF*"],
     "sfDisjoint":   ["FF*FF****"],
@@ -96,19 +104,15 @@ SF_PATTERNS = {
     "sfWithin":     ["T*F**F***"],
     "sfContains":   ["T*****FF*"],
     "sfOverlaps":   ["T*T***T**"],
-    "sfCrosses":    ["T*T******"],
+    "sfCrosses":    [],
 }
 
 
 def simple_features(matrix):
-    """Which of the eight hold, read off the matrix.
+    """Which of the eight hold between two areas, read off the matrix.
 
-    sfOverlaps and sfCrosses are the two whose definition depends on the
-    dimensions of the operands. These patterns are the area/area readings;
-    for a line or a point they are not the right ones, and this file only ever
-    sees areas.
+    An empty pattern list means the predicate is undefined for this pair of
+    dimensions, which SFA answers as false rather than as an error.
     """
-    out = {}
-    for name, pats in SF_PATTERNS.items():
-        out[name] = any(matches(matrix, p) for p in pats)
-    return out
+    return {name: any(matches(matrix, p) for p in pats)
+            for name, pats in SF_PATTERNS.items()}

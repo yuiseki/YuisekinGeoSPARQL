@@ -15,5 +15,5 @@ COPY requirements.txt .
 # exists, so a pinned version is an immutable artefact.
 RUN pip install --no-cache-dir --disable-pip-version-check -r requirements.txt
 
-COPY build_rdf.py sources.py rcc8.py ./
+COPY build_rdf.py sources.py rcc8.py triples.py ./
 ENTRYPOINT ["python", "build_rdf.py"]
