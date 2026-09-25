@@ -1,0 +1,6 @@
+# Pinned exactly. A range here would make the output depend on when the image
+# was built, which is the one thing this repository is trying to avoid.
+huggingface-hub==0.35.3
+pyarrow==21.0.0
+shapely==2.1.1
+pyproj==3.7.2

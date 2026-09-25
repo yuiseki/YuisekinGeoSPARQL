@@ -1,0 +1,40 @@
+## A GeoSPARQL dataset over one in-memory graph.
+##
+## geo:GeosparqlDataset wraps a plain dataset and adds the GeoSPARQL machinery: the
+## topology property functions (geo:sfWithin and the rest), the filter
+## functions (geof:sfWithin, geof:relate), and a spatial index over anything
+## carrying geo:asWKT.
+##
+## The data is loaded from a file at startup and never written to. Nothing
+## here reaches the network: no service description fetches an ontology, no
+## query can name a remote endpoint, and the container has no reason to.
+
+@prefix :        <#> .
+@prefix fuseki:  <http://jena.apache.org/fuseki#> .
+@prefix ja:      <http://jena.hpl.hp.com/2005/11/Assembler#> .
+@prefix rdf:     <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+@prefix rdfs:    <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix geo:     <http://jena.apache.org/geosparql#> .
+
+<#service> a fuseki:Service ;
+    fuseki:name       "geo" ;
+    fuseki:endpoint   [ fuseki:operation fuseki:query ; fuseki:name "sparql" ] ;
+    fuseki:endpoint   [ fuseki:operation fuseki:query ; fuseki:name "query" ] ;
+    fuseki:endpoint   [ fuseki:operation fuseki:query ] ;
+    fuseki:dataset    <#geo> .
+
+<#geo> a geo:GeosparqlDataset ;
+    ## Applies the GeoSPARQL rules that let geo:sfWithin be asked of a
+    ## feature rather than only of a geometry. Without it a query has to
+    ## reach through geo:hasGeometry/geo:asWKT by hand.
+    geo:inference       true ;
+    ## Literals arriving without a CRS URI are read as CRS84, which is what
+    ## the builder writes and what GeoSPARQL says the default is.
+    geo:queryRewrite    true ;
+    geo:applyDefaultGeometry true ;
+    geo:indexEnabled    true ;
+    geo:dataset         <#base> .
+
+## The data lines are appended by entrypoint.sh, one per .ttl the builder
+## wrote, because which sources were built is a decision made at build time.
+<#base> a ja:MemoryDataset ;

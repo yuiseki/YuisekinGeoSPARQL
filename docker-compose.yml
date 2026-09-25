@@ -1,0 +1,65 @@
+# Two services and one volume. The builder writes the graph once; Fuseki
+# serves it. Neither reaches the network after the build: the dataset is
+# fetched at a pinned revision during `builder`, and the server has no
+# outbound work to do.
+#
+#   docker compose run --rm builder     # writes ./data/*.ttl
+#   docker compose up -d fuseki         # serves http://localhost:3030/geo/sparql
+#   docker compose run --rm tests       # checks the graphs and the queries
+#
+# SOURCES picks what to load, and with it what licence the result carries:
+#
+#   SOURCES=ne-admin0 docker compose up --build    # public domain
+#   SOURCES=tokyo23   docker compose up --build    # ODbL
+#   docker compose up --build                      # both, so ODbL
+#
+# `docker compose up --build` does all three in order, because fuseki waits
+# for the builder to finish and tests wait for fuseki to answer.
+
+services:
+  builder:
+    build:
+      context: ./builder
+    # Runs as root so that a data directory left by an earlier run is always
+    # writable, and hands the files back afterwards. Running as the invoking
+    # user instead cannot recover from a directory root already owns, and
+    # leaving them owned by root means removing them needs privileges that
+    # "start from a clean checkout" should not require.
+    environment:
+      HOST_UID: "${UID:-1000}"
+      HOST_GID: "${GID:-1000}"
+    volumes:
+      - ./data:/data
+    command: ["--out", "/data", "--source", "${SOURCES:-all}"]
+
+  fuseki:
+    build:
+      context: ./fuseki
+    depends_on:
+      builder:
+        condition: service_completed_successfully
+    ports:
+      - "${FUSEKI_PORT:-3030}:3030"
+    volumes:
+      - ./data:/data:ro
+    healthcheck:
+      # Asks for the ward count rather than pinging the port: a server that is
+      # listening but whose graph failed to load answers zero, and the tests
+      # would then be measuring an empty dataset.
+      test: ["CMD-SHELL", "curl -sf --get --data-urlencode 'query=PREFIX geo: <http://www.opengis.net/ont/geosparql#> ASK { ?f a geo:Feature }' http://localhost:3030/geo/sparql | grep -q true"]
+      interval: 5s
+      timeout: 10s
+      retries: 30
+      start_period: 10s
+
+  tests:
+    build:
+      context: ./tests
+    depends_on:
+      fuseki:
+        condition: service_healthy
+    volumes:
+      - ./data:/data:ro
+    environment:
+      ENDPOINT: http://fuseki:3030/geo/sparql
+      SOURCES: "${SOURCES:-all}"
