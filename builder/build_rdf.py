@@ -892,6 +892,9 @@ def main():
     ap.add_argument("--out", default="/data")
     ap.add_argument("--source", action="append", default=None,
                     help="repeatable; 'all' for every source")
+    ap.add_argument("--sources", default=None,
+                    help="the same, space separated, for a compose command "
+                         "that can only pass one string")
     ap.add_argument("--normalize", choices=["snap", "area-ratio"],
                     default=None,
                     help="also write a normalized RCC8 column, in fields of "
@@ -907,7 +910,10 @@ def main():
                          "measured so far is under 0.032")
     a = ap.parse_args()
 
-    keys = a.source or ["all"]
+    keys = list(a.source or [])
+    if a.sources:
+        keys += a.sources.split()
+    keys = keys or ["all"]
     if "all" in keys:
         keys = list(S.SOURCES)
     unknown = [k for k in keys if k not in S.SOURCES]

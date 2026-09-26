@@ -36,7 +36,15 @@ services:
       HOST_GID: "${GID:-1000}"
     volumes:
       - ./data:/data
-    command: ["--out", "/data", "--source", "${SOURCES:-all}"]
+    # The four layers the tests and the published digests are about, not
+    # every layer the builder knows. "all" stopped being a sensible default
+    # when Japan's registry and the US counties arrived: it is 97,000
+    # features, hours of pairwise geometry, and a graph that mixes ODbL with
+    # CC BY and therefore comes out ODbL. Ask for what you want.
+    #
+    #   SOURCES="abr-pref abr-muni" docker compose up --build   # CC BY only
+    #   SOURCES=all                 docker compose up --build   # everything
+    command: ["--out", "/data", "--sources", "${SOURCES:-tokyo23 tokyo23-poi ne-admin0 ne-admin1}"]
 
   fuseki:
     build:
@@ -68,4 +76,3 @@ services:
       - ./data:/data:ro
     environment:
       ENDPOINT: http://fuseki:3030/geo/sparql
-      SOURCES: "${SOURCES:-all}"

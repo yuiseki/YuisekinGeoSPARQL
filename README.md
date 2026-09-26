@@ -38,17 +38,40 @@ topological question.
 | `tokyo23-poi` | 7,265 named places | the same dataset, point and polygon tables | ODbL-1.0 |
 | `ne-admin0` | 258 countries | [`yuiseki/ne-admin0-10m`](https://huggingface.co/datasets/yuiseki/ne-admin0-10m) | public domain |
 | `ne-admin1` | 4,596 states | the same dataset, admin-1 subset | public domain |
+| `ne-admin2` | 3,224 counties | the same dataset, admin-2 subset, the United States only | public domain |
+| `abr-pref` | 47 prefectures | [`yuiseki/jp-admin-2026-09`](https://huggingface.co/datasets/yuiseki/jp-admin-2026-09) | CC BY 4.0 |
+| `abr-muni` | 1,909 municipalities | the same dataset | CC BY 4.0 |
 
 `SOURCES` picks what to load, and with it what the result carries:
 
 ```bash
-SOURCES=ne-admin0,ne-admin1 docker compose up --build   # public domain
-SOURCES=tokyo23             docker compose up --build   # ODbL
-docker compose up --build                               # all four, so ODbL
+docker compose up --build                       # the default four, so ODbL
+SOURCES="ne-admin0 ne-admin1 ne-admin2" docker compose up --build  # public domain
+SOURCES="abr-pref abr-muni"             docker compose up --build  # CC BY
+SOURCES=all                             docker compose up --build  # everything
 ```
 
+The default is `tokyo23 tokyo23-poi ne-admin0 ne-admin1`, which is what the
+tests and the published digests are about. `all` is 97,000 features, hours of
+pairwise geometry, and a graph that mixes ODbL with CC BY and therefore comes
+out ODbL, so it is available and not the default.
+
+`abr-pref` and `abr-muni` are Japan without OpenStreetMap in it: the Address
+Base Registry's names on the 2020 census boundaries. A graph of those two is
+CC BY, so what is built from it carries no share-alike. They sit beside the
+`tokyo23` and `jp-*` layers rather than replacing them, because the two
+disagree in ways worth being able to see: OpenStreetMap has 1,740
+municipalities at `admin_level=7` and the registry has 1,918, since the 171
+wards of the designated cities sit at a different level in one and not in the
+other.
+
+Nine of the registry's 1,918 have no boundary and are dropped here, which is
+why the count above is 1,909: six villages of the Northern Territories the
+census does not survey, and three wards Hamamatsu created in 2024.
+
 Share-alike is contagious: one ODbL source makes the whole derived database
-ODbL whatever else is in it. The builder works that out from the sources it
+ODbL whatever else is in it. CC BY is not: it asks to be credited and stops
+there. The builder works that out from the sources it
 was given and writes the answer into `manifest.json`, so a reader of the
 output does not have to.
 
@@ -106,6 +129,23 @@ The raw columns are observations. The normalized ones are a judgement, and
 carry the method and the tolerance that produced them, so a reader can
 disagree with the judgement without losing the observation. They are never
 mixed.
+
+There are two methods and the second exists because the first does not always
+apply.
+
+`--normalize snap` moves the subject's vertices onto the object's where they
+are within a distance, then reads the matrix again. It closes a hairline.
+
+`--normalize area-ratio` reads an overlap smaller than a fraction of the
+subject as a touch. Japan's census boundaries are digitised per municipality,
+and neighbours across a border do not share their nodes: 川崎市幸区 and
+大田区 overlap across the Tama river by 1.2% of a ward. Snapping at a hundred
+metres does not close that, because it is not a hairline but two readings of
+where the river is. On the CC BY layers the rule turns all 3,394 overlaps
+into EC, leaves every containment alone, and the largest overlap it has to
+cover is 0.032 against a threshold of 0.05. That is not much room, and a
+later edition that exceeds it will show as a PO that survives normalisation
+rather than as a silent rewrite.
 
 Only pairs that are **not** disjoint are written, and only between layers
 that are compared at all. 12,142 features make 147,416,022 ordered pairs;
