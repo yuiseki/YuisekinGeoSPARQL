@@ -23,8 +23,18 @@ LICENCES = {
         "share_alike": False,
         "attribution_required": False,
     },
-    "ODbL-1.0": {
+    # Attribution, and nothing more. Japan's government registries land here:
+    # they ask to be credited and they do not reach into what is built from
+    # them, which is the whole difference from the entry below.
+    "CC-BY-4.0": {
         "rank": 1,
+        "name": "Creative Commons Attribution 4.0 International",
+        "url": "https://creativecommons.org/licenses/by/4.0/",
+        "share_alike": False,
+        "attribution_required": True,
+    },
+    "ODbL-1.0": {
+        "rank": 2,
         "name": "Open Database License v1.0",
         "url": "https://opendatacommons.org/licenses/odbl/1-0/",
         "share_alike": True,
@@ -185,6 +195,89 @@ SOURCES = {
         "note": "One feature per Wikidata id, from the point and polygon "
                 "tables. Administrative boundaries are excluded: they are "
                 "their own layers.",
+    },
+    # Japan's administrative geography without OpenStreetMap in it. The names
+    # and codes are the Digital Agency's registry and the boundaries are the
+    # 2020 census, both CC BY, fused at the municipality in jp-admin-2026-09.
+    #
+    # Beside the tokyo23 and jp-* layers rather than instead of them. The two
+    # disagree in ways worth being able to see: OpenStreetMap has 1,740
+    # municipalities at admin_level 7 and the registry has 1,918, because the
+    # 171 wards of the designated cities sit at a different level in one and
+    # not in the other.
+    "abr-pref": {
+        "title": "Prefectures of Japan, registry names on census boundaries",
+        "dataset": "yuiseki/jp-admin-2026-09",
+        "revision": "c86cbe9f2200dadb441f5bde7a1e4b068aeaa7f0",
+        "file": "prefectures.parquet",
+        "licence": "CC-BY-4.0",
+        "rights_holder": "デジタル庁 and 総務省統計局",
+        "iri_base": BASE + "abr-pref/",
+        "collection": "abr-pref",
+        "collection_label": [("都道府県", "ja"),
+                             ("Prefectures of Japan", "en")],
+        "feature_class": "Prefecture",
+        "expected": 47,
+        # JGD2000. A datum shift from WGS84 of a few centimetres, which is
+        # below the seven decimals everything here is rounded to, but stated
+        # rather than assumed.
+        "source_crs": "EPSG:4612",
+        "loader": "load_abr_admin",
+        "note": (
+            "Names, readings and romanisation from the Address Base Registry; "
+            "boundary and population from the 2020 census small areas, "
+            "dissolved."),
+    },
+    "abr-muni": {
+        "title": "Municipalities of Japan, registry names on census boundaries",
+        "dataset": "yuiseki/jp-admin-2026-09",
+        "revision": "c86cbe9f2200dadb441f5bde7a1e4b068aeaa7f0",
+        "file": "municipalities.parquet",
+        "licence": "CC-BY-4.0",
+        "rights_holder": "デジタル庁 and 総務省統計局",
+        "iri_base": BASE + "abr-muni/",
+        "collection": "abr-muni",
+        "collection_label": [("市区町村", "ja"),
+                             ("Municipalities of Japan", "en")],
+        "feature_class": "Municipality",
+        # 1,918 rows, of which nine have no boundary: six villages of the
+        # Northern Territories the census does not survey, and three wards
+        # Hamamatsu created in 2024. A feature with no geometry cannot be in
+        # a graph of geometries, so they are dropped here and the count says
+        # so rather than the loader failing.
+        "expected": 1909,
+        "source_crs": "EPSG:4612",
+        "loader": "load_abr_admin",
+        "note": (
+            "Includes the 171 wards of the 20 designated cities, which sit "
+            "beside their parent city rather than inside it: both carry the "
+            "same ground, so a count over this layer double-counts 30 "
+            "million people unless the wards are excluded."),
+    },
+    # Pinned at the revision that first carries admin-2. The admin-0 and
+    # admin-1 entries below stay at the older one on purpose: their Parquet
+    # bytes are identical at both, and moving the pin would change the
+    # provenance string on every row of every dataset already built from
+    # them for no change in the data.
+    "ne-admin2": {
+        "title": "Natural Earth admin-2 counties, 10m",
+        "dataset": "yuiseki/ne-admin0-10m",
+        "revision": "a891044f7e524b93c60a7686834bd6b8e788d1e1",
+        "file": "v5.1.1/parquet/ne_10m_admin_2_counties.parquet",
+        "licence": "public-domain",
+        "rights_holder": "Natural Earth",
+        "iri_base": BASE + "ne-admin2/",
+        "collection": "ne-admin2",
+        "collection_label": [("Natural Earth admin-2 counties", "en")],
+        "feature_class": "County",
+        "expected": 3224,
+        "source_crs": "EPSG:4326",
+        "loader": "load_ne_admin2",
+        "note": (
+            "The United States and nothing else: Natural Earth publishes no "
+            "admin-2 for the other 257 countries at this scale. REGION joins "
+            "a county to its state, not iso_3166_2, which holds US-53 here "
+            "and US-WA there."),
     },
     "ne-admin0": {
         "title": "Natural Earth admin-0 countries, 10m",

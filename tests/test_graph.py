@@ -281,3 +281,40 @@ def test_no_field_can_be_read_as_a_separator(relations):
         for name, value in r.items():
             assert "\t" not in (value or ""), (name, r)
             assert "\n" not in (value or ""), (name, r)
+
+
+def test_the_normalised_reading_is_in_its_own_columns(relations):
+    """A judgement must never overwrite an observation.
+
+    rcc8_raw is what the geometry says and rcc8_norm is what a rule made of
+    it, and the method and the tolerance that produced the second are beside
+    it so a reader can disagree with the rule without losing the measurement.
+    """
+    for r in relations.values():
+        if not r["norm_method"]:
+            continue
+        assert r["rcc8_raw"], r
+        assert r["norm_tolerance"], r
+        assert r["norm_method"] in ("snap", "area_ratio"), r
+
+
+def test_area_ratio_only_ever_turns_an_overlap_into_a_touch(relations):
+    """The one rewrite the rule is allowed to make.
+
+    Japan's census boundaries are digitised per municipality and neighbours
+    across a border do not share their nodes, so administrative units that
+    cannot overlap do. The rule reads a small overlap as adjacency and must
+    leave everything else exactly as measured: a containment rewritten by a
+    tolerance would be the rule asserting the hierarchy rather than the data
+    showing it.
+    """
+    for r in relations.values():
+        if r["norm_method"] != "area_ratio":
+            continue
+        if r["rcc8_raw"] == r["rcc8_norm"]:
+            continue
+        assert r["rcc8_raw"] == "PO", r
+        assert r["rcc8_norm"] == "EC", r
+        # And only where the overlap really is small.
+        inside = 1.0 - float(r["outside_ratio"])
+        assert inside <= float(r["norm_tolerance"]), r

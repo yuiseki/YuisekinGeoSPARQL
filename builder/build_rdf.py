@@ -384,6 +384,113 @@ def load_jp_poi(paths, spec):
     return out
 
 
+def load_abr_admin(path, spec):
+    """One rung of Japan's administrative hierarchy, registry names and all.
+
+    The rows arrive already fused: the Address Base Registry supplies the
+    codes and the names in kanji, kana and Latin script, and the 2020 census
+    supplies the boundary and the counts. Nothing here has to join anything.
+
+    Nine of the 1,918 municipalities have no boundary: six villages of the
+    Northern Territories the census does not survey, and three wards Hamamatsu
+    created in 2024, after the census. A feature without geometry cannot take
+    part in a graph of geometries, so they are dropped, counted, and named in
+    the summary rather than silently skipped.
+    """
+    import pyarrow.parquet as pq
+    from shapely import wkb
+    from shapely.geometry import MultiPolygon
+
+    t = pq.read_table(path)
+    have = set(t.column_names)
+    cols = [c for c in ("lg_code", "code5", "pref_code", "pref", "pref_kana",
+                        "pref_roma", "county", "city", "ward", "name",
+                        "name_roma", "population", "households",
+                        "geometry_source", "municipalities", "geometry")
+            if c in have]
+    rows = t.select(cols).to_pylist()
+
+    out, without = [], []
+    for row in rows:
+        if not row.get("geometry"):
+            without.append(row.get("name") or row.get("pref"))
+            continue
+        geom = wkb.loads(bytes(row["geometry"]))
+        if geom.geom_type == "Polygon":
+            geom = MultiPolygon([geom])
+        ja = row.get("name") or row.get("pref")
+        roma = row.get("name_roma") or row.get("pref_roma")
+        labels = [(ja, "ja")]
+        if roma:
+            labels.append((roma, "en"))
+        key = row.get("lg_code") or row.get("pref_code")
+        props = []
+        for col, pred in (("lg_code", "lgCode"), ("code5", "code5"),
+                          ("pref_code", "prefCode"), ("pref", "prefName"),
+                          ("county", "county"), ("ward", "ward"),
+                          ("geometry_source", "geometrySource")):
+            if row.get(col):
+                props.append('gs:%s "%s"' % (pred, escape(str(row[col]))))
+        for col, pred in (("population", "population"),
+                          ("households", "households")):
+            if row.get(col) is not None:
+                props.append('gs:%s "%d"^^xsd:integer' % (pred, row[col]))
+        out.append({"key": safe_key("%s-%s" % (spec["collection"], key)),
+                    "sort": key, "label": labels, "geometry": geom,
+                    "props": props, "parts": 1, "name": ja})
+    if without:
+        print(f"  {len(without)} without a boundary, dropped: "
+              f"{', '.join(without[:6])}"
+              + (" ..." if len(without) > 6 else ""))
+    out.sort(key=lambda r: r["sort"])
+    return out
+
+
+def load_ne_admin2(path, spec):
+    """3,224 counties of the United States, and of nowhere else.
+
+    REGION carries the postal abbreviation of the state, WA, which is the
+    second half of the admin-1 layer's iso_3166_2, US-WA. The column called
+    iso_3166_2 here carries US-53, the FIPS number, so a join on the shared
+    column name matches nothing and does so quietly. Both are written out.
+    """
+    import pyarrow.parquet as pq
+    from shapely import wkb
+    from shapely.geometry import MultiPolygon
+
+    t = pq.read_table(path, columns=["NAME", "NAME_EN", "NAME_JA", "TYPE_EN",
+                                     "REGION", "ISO_3166_2", "ADM0_A3",
+                                     "ADM2_CODE", "CODE_LOCAL", "WIKIDATAID",
+                                     "geometry"])
+    out = []
+    for row in t.to_pylist():
+        geom = wkb.loads(bytes(row["geometry"]))
+        if geom.geom_type == "Polygon":
+            geom = MultiPolygon([geom])
+        labels = []
+        if row.get("NAME_EN") or row.get("NAME"):
+            labels.append((row.get("NAME_EN") or row["NAME"], "en"))
+        # 3,212 of 3,224 carry one, so a Japanese sentence about an American
+        # county has a name to use.
+        if row.get("NAME_JA"):
+            labels.append((row["NAME_JA"], "ja"))
+        props = ['gs:adm2Code "%s"' % escape(row["ADM2_CODE"] or ""),
+                 'gs:parentRegion "%s"' % escape(row["REGION"] or ""),
+                 'gs:iso3166_2 "%s"' % escape(row["ISO_3166_2"] or ""),
+                 'gs:parentAdm0A3 "%s"' % escape(row["ADM0_A3"] or ""),
+                 'gs:codeLocal "%s"' % escape(row["CODE_LOCAL"] or ""),
+                 'gs:typeEn "%s"' % escape(row["TYPE_EN"] or "")]
+        qid = row.get("WIKIDATAID") or ""
+        if QID.match(qid):
+            props.append("owl:sameAs wd:%s" % qid)
+        out.append({"key": safe_key("county-" + (row["ADM2_CODE"] or "")),
+                    "sort": row["ADM2_CODE"] or "", "label": labels,
+                    "geometry": geom, "props": props, "parts": 1,
+                    "name": row.get("NAME_EN") or row.get("NAME")})
+    out.sort(key=lambda r: r["sort"])
+    return out
+
+
 def load_ne_admin0(path, spec):
     """258 countries as Natural Earth draws them, de facto, at 1:10m."""
     import pyarrow.parquet as pq
@@ -469,6 +576,8 @@ def load_ne_admin1(path, spec):
 
 
 LOADERS = {"load_tokyo23": load_tokyo23,
+           "load_abr_admin": load_abr_admin,
+           "load_ne_admin2": load_ne_admin2,
            "load_tokyo23_poi": load_tokyo23_poi,
            "load_jp_admin": load_jp_admin,
            "load_jp_poi": load_jp_poi,
@@ -675,6 +784,29 @@ def relations(features, normalize=None, tolerance=None, allowed=None):
                 row["norm_method"] = "snap"
                 row["norm_tolerance"] = "%.12g" % tolerance
                 row["rcc8_norm"] = R.of_matrix(relate(sa, gb)) or ""
+            elif normalize == "area-ratio" and ka == "area" and kb == "area":
+                # Read a small overlap as a touch.
+                #
+                # Snapping is the wrong instrument for the disagreement this
+                # was added for. Japan's census boundaries are digitised per
+                # municipality and neighbours across a border do not share
+                # their nodes, so 川崎市幸区 and 大田区 overlap across the
+                # Tama river by 1.2% of a ward. Snapping at a hundred metres
+                # does not close it, because it is not a hairline: it is two
+                # readings of where the river is.
+                #
+                # Administrative units of one country do not overlap, so an
+                # overlap below the threshold is read as adjacency. Above it,
+                # the raw reading stands: a rule that rewrote everything would
+                # be asserting the conclusion rather than measuring it.
+                row["norm_method"] = "area_ratio"
+                row["norm_tolerance"] = "%.12g" % tolerance
+                inside = 1.0 - (outside / ga.area if ga.area else 0.0)
+                raw = row["rcc8_raw"]
+                if raw == "PO" and inside <= tolerance:
+                    row["rcc8_norm"] = "EC"
+                else:
+                    row["rcc8_norm"] = raw
             out.append(row)
     out.sort(key=lambda r: (r["subject_id"], r["object_id"]))
     return out
@@ -760,12 +892,19 @@ def main():
     ap.add_argument("--out", default="/data")
     ap.add_argument("--source", action="append", default=None,
                     help="repeatable; 'all' for every source")
-    ap.add_argument("--normalize", choices=["snap"], default=None,
+    ap.add_argument("--normalize", choices=["snap", "area-ratio"],
+                    default=None,
                     help="also write a normalized RCC8 column, in fields of "
-                         "its own. The raw columns are never touched")
-    ap.add_argument("--tolerance", type=float, default=1e-6,
-                    help="with --normalize snap, in degrees. 1e-6 is about "
-                         "10 cm at this latitude")
+                         "its own. The raw columns are never touched. snap "
+                         "moves vertices within a distance; area-ratio reads "
+                         "an overlap smaller than a fraction of the subject "
+                         "as a touch")
+    ap.add_argument("--tolerance", type=float, default=None,
+                    help="with snap, a distance in degrees, default 1e-6, "
+                         "about 10 cm at this latitude. With area-ratio, a "
+                         "fraction of the subject's area, default 0.05. "
+                         "Every overlap between two Japanese municipalities "
+                         "measured so far is under 0.032")
     a = ap.parse_args()
 
     keys = a.source or ["all"]
@@ -789,7 +928,10 @@ def main():
             print(f"  {name} was assembled from {n} rows")
 
     features.sort(key=lambda r: (r["source"], r["key"]))
-    rels = relations(features, a.normalize, a.tolerance,
+    tolerance = a.tolerance
+    if tolerance is None:
+        tolerance = 0.05 if a.normalize == "area-ratio" else 1e-6
+    rels = relations(features, a.normalize, tolerance,
                      allowed_pairs([S.SOURCES[k] for k in keys]))
     rel_path = os.path.join(a.out, "relations.tsv")
     write_relations(rels, rel_path)
@@ -838,7 +980,7 @@ def main():
             "by_layer_pair": {f"{a_}->{b_}": n
                               for (a_, b_), n in sorted(cross.items())},
             "normalize": a.normalize,
-            "tolerance": a.tolerance if a.normalize else None,
+            "tolerance": tolerance if a.normalize else None,
             "sha256": hashlib.sha256(rel_text.encode("utf-8")).hexdigest(),
             "note": (
                 "Only pairs that are not disjoint are written, and only "
@@ -876,10 +1018,20 @@ def main():
     for (a_, b_), n in sorted(cross.items()):
         print(f"    {a_} -> {b_:12} {n:7,}")
     print(f"\ngraph licence: {info['name']} ({licence})")
+    # Two flags, not one. A licence can require attribution without being
+    # share-alike, which is exactly where CC BY sits, and saying "no
+    # share-alike and no attribution required" of it is wrong on the half
+    # that matters to anyone redistributing the result.
     if info["share_alike"]:
-        print("  share-alike applies. Anything built from this graph carries it.")
+        print("  share-alike applies. Anything built from this graph "
+              "carries it.")
     else:
-        print("  no share-alike and no attribution required.")
+        print("  no share-alike. What is built from this graph may carry "
+              "any licence.")
+    if info["attribution_required"]:
+        print(f"  attribution is required: {', '.join(sorted({b['rights_holder'] for b in built}))}")
+    else:
+        print("  no attribution required.")
 
     uid, gid = os.environ.get("HOST_UID"), os.environ.get("HOST_GID")
     if uid and gid and os.geteuid() == 0:
