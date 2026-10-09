@@ -38,12 +38,13 @@ services:
       - ./data:/data
     # The four layers the tests and the published digests are about, not
     # every layer the builder knows. "all" stopped being a sensible default
-    # when Japan's registry and the US counties arrived: it is 97,000
+    # when Japan's registry and the US counties arrived: it is 128,000
     # features, hours of pairwise geometry, and a graph that mixes ODbL with
     # CC BY and therefore comes out ODbL. Ask for what you want.
     #
-    #   SOURCES="abr-pref abr-muni" docker compose up --build   # CC BY only
-    #   SOURCES=all                 docker compose up --build   # everything
+    #   SOURCES="abr-pref abr-muni"   docker compose up --build   # CC BY only
+    #   SOURCES="tokyo23 tokyo23-food" docker compose up --build  # shops by ward
+    #   SOURCES=all                   docker compose up --build   # everything
     command: ["--out", "/data", "--sources", "${SOURCES:-tokyo23 tokyo23-poi ne-admin0 ne-admin1}"]
 
   fuseki:

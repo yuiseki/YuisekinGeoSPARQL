@@ -107,6 +107,44 @@ SOURCES = {
             "not. Administrative boundaries are excluded: the wards are "
             "already a layer."),
     },
+    # Named food-service places, one feature per OSM object rather than per
+    # Wikidata id. tokyo23-poi exists to say which ward a landmark is in, and
+    # a chain's branches share the chain's Wikidata id (brand:wikidata), not
+    # one of their own, so counting by Wikidata id there answers "how many
+    # chains" rather than "how many shops". This layer answers the shop
+    # count, at the cost of carrying every named restaurant, cafe, bar, pub,
+    # fast-food place, food court and ice-cream parlour in the wards: 28,264
+    # features, about four times tokyo23-poi, so it stays out of the default
+    # build and is asked for by name.
+    "tokyo23-food": {
+        "title": "Named food-service places in the Tokyo wards",
+        "dataset": "yuiseki/osm-tokyo23-src-2026-08",
+        "revision": "e60e017f6a77fa81014b11ca953ae0b2b177edaf",
+        "files": ["parquet/planet_osm_point.parquet",
+                  "parquet/planet_osm_polygon.parquet"],
+        "licence": "ODbL-1.0",
+        "rights_holder": "OpenStreetMap contributors",
+        "iri_base": BASE + "tokyo23-food/",
+        "collection": "tokyo23-food",
+        "collection_label": [("東京都区部の飲食店", "ja"),
+                             ("Food-service places in the Tokyo wards", "en")],
+        "feature_class": "FoodService",
+        "expected": 28264,
+        "source_crs": "EPSG:3857",
+        "loader": "load_tokyo23_food",
+        # Only against the wards, the same restriction tokyo23-poi applies
+        # and for the same reason: the question is which ward a shop is in,
+        # not how 28,264 shops relate to one another.
+        "pairs_with": ["tokyo23"],
+        "note": (
+            "amenity is one of restaurant, cafe, bar, pub, fast_food, "
+            "food_court or ice_cream, and the row carries a name. Identity "
+            "is the OSM object: a branch of a chain is its own feature, "
+            "keyed by osm_id, so that branches can be counted. cuisine, "
+            "brand and the chain's brand:wikidata are carried as plain "
+            "properties rather than as owl:sameAs, because they identify "
+            "the chain, not this branch."),
+    },
     # The country-sized sibling of tokyo23, from the same planet file. Four
     # layers rather than one, because the question this source exists for is a
     # hierarchy: a place is in a municipality, which is in a prefecture, which

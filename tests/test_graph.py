@@ -42,7 +42,23 @@ SOURCES = {
         "ttl_sha256":
             "ba4ed3a41539664e2824976b21dddf0118908db7625961d8fecd817757231f4d",
     },
+    # Opt-in, not part of DEFAULT below: 28,264 features is four times
+    # tokyo23-poi, so it is asked for by name rather than built every time.
+    "tokyo23-food": {
+        "dataset": "yuiseki/osm-tokyo23-src-2026-08",
+        "revision": "e60e017f6a77fa81014b11ca953ae0b2b177edaf",
+        "licence": "ODbL-1.0", "features": 28264, "positions": 32040,
+        "ttl_sha256":
+            "bdd8f032f6447520b97896967161ad0b915934c7f73ecef7723e305043be64c1",
+    },
 }
+
+# The bundle `docker compose up --build` asks for with no SOURCES set. The
+# tests and the published digests in ALL below are about this combination,
+# not about every key SOURCES happens to know pins for: tokyo23-food is
+# pinned above so a build that includes it is still checked byte for byte,
+# but it is not part of what "every source" means for ALL.
+DEFAULT = frozenset({"tokyo23", "tokyo23-poi", "ne-admin0", "ne-admin1"})
 
 # With every source loaded.
 ALL = {
@@ -118,7 +134,7 @@ def test_the_relations_file_is_byte_for_byte_what_it_was(manifest, built):
     """Only when every source is loaded: the file is computed over all of them
     at once, so a subset gives different and equally correct bytes.
     """
-    if set(built) != set(SOURCES):
+    if set(built) != DEFAULT:
         import pytest
         pytest.skip(f"only {sorted(built)} built")
     rel = manifest["relations"]
@@ -193,7 +209,7 @@ def test_the_converse_relations_balance(manifest, built):
     """TPP and TPPi are read from the same matrix, one transposed. If the
     counts ever differ, the transpose is wrong.
     """
-    if set(built) != set(SOURCES):
+    if set(built) != DEFAULT:
         import pytest
         pytest.skip(f"only {sorted(built)} built")
     by = manifest["relations"]["by_rcc8"]
@@ -250,6 +266,56 @@ def test_places_are_compared_against_wards_and_nothing_else(manifest, relations,
         layers = {r["subject_layer"], r["object_layer"]}
         if "tokyo23-poi" in layers:
             assert layers == {"tokyo23-poi", "tokyo23"}, r
+
+
+def test_a_branch_is_within_the_ward_it_is_in(relations, built):
+    """The question this layer was added for, as opposed to tokyo23-poi's.
+
+    A named McDonald's branch, mapped as an area, against 江戸川区. Identity
+    here is the OSM object rather than a Wikidata id, so this branch and
+    every other マクドナルド in the wards are each their own feature.
+    """
+    require(built, "tokyo23")
+    require(built, "tokyo23-food")
+    edogawa, branch = "ward-1761743", "food-10011213133"
+    down = relations[(branch, edogawa)]
+    up = relations[(edogawa, branch)]
+    assert "sfWithin" in down["sf_raw"].split(",")
+    assert "sfContains" in up["sf_raw"].split(",")
+    assert down["subject_layer"] == "tokyo23-food"
+    assert down["subject_name"] == "マクドナルド"
+
+
+def test_food_places_are_compared_against_wards_and_nothing_else(manifest, relations,
+                                                                  built):
+    """The same restriction tokyo23-poi applies, and for the same reason: the
+    question is which ward a shop is in, not how 28,264 shops relate to one
+    another or to anything else.
+    """
+    require(built, "tokyo23-food")
+    assert manifest["relations"]["layers_compared"]["tokyo23-food"] == ["tokyo23"]
+    for r in relations.values():
+        layers = {r["subject_layer"], r["object_layer"]}
+        if "tokyo23-food" in layers:
+            assert layers == {"tokyo23-food", "tokyo23"}, r
+
+
+def test_every_food_place_lands_in_exactly_one_ward(relations, built):
+    """Every named food-service place in the extract is inside some ward:
+    none of the 28,264 sit outside the 23 wards' union, and none straddle a
+    boundary and land in two.
+    """
+    require(built, "tokyo23")
+    require(built, "tokyo23-food")
+    within = [r for r in relations.values()
+             if r["subject_layer"] == "tokyo23-food"
+             and r["object_layer"] == "tokyo23"
+             and "sfWithin" in r["sf_raw"].split(",")]
+    by_subject = {}
+    for r in within:
+        by_subject.setdefault(r["subject_id"], []).append(r["object_id"])
+    assert len(by_subject) == 28264
+    assert all(len(wards) == 1 for wards in by_subject.values())
 
 
 def test_a_ward_is_inside_the_country_the_other_sources_draw(relations, built):

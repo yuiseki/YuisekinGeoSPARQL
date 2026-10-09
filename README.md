@@ -36,6 +36,7 @@ topological question.
 |---|---|---|---|
 | `tokyo23` | 23 wards | [`yuiseki/osm-tokyo23-src-2026-08`](https://huggingface.co/datasets/yuiseki/osm-tokyo23-src-2026-08) | ODbL-1.0 |
 | `tokyo23-poi` | 7,265 named places | the same dataset, point and polygon tables | ODbL-1.0 |
+| `tokyo23-food` | 28,264 named food-service places | the same dataset, point and polygon tables | ODbL-1.0 |
 | `ne-admin0` | 258 countries | [`yuiseki/ne-admin0-10m`](https://huggingface.co/datasets/yuiseki/ne-admin0-10m) | public domain |
 | `ne-admin1` | 4,596 states | the same dataset, admin-1 subset | public domain |
 | `ne-admin2` | 3,224 counties | the same dataset, admin-2 subset, the United States only | public domain |
@@ -46,15 +47,31 @@ topological question.
 
 ```bash
 docker compose up --build                       # the default four, so ODbL
+SOURCES="tokyo23 tokyo23-food"           docker compose up --build  # shops by ward
 SOURCES="ne-admin0 ne-admin1 ne-admin2" docker compose up --build  # public domain
 SOURCES="abr-pref abr-muni"             docker compose up --build  # CC BY
 SOURCES=all                             docker compose up --build  # everything
 ```
 
 The default is `tokyo23 tokyo23-poi ne-admin0 ne-admin1`, which is what the
-tests and the published digests are about. `all` is 97,000 features, hours of
+tests and the published digests are about. `all` is 128,000 features, hours of
 pairwise geometry, and a graph that mixes ODbL with CC BY and therefore comes
 out ODbL, so it is available and not the default.
+
+`tokyo23-food` is opt-in for the same reason: 28,264 features is four times
+`tokyo23-poi`, the layer it sits beside. The two answer different questions.
+`tokyo23-poi` exists to say which ward a landmark is in, and identifies a
+place by its Wikidata id so that the same place mapped twice in OpenStreetMap
+still comes out as one feature. A chain restaurant's branches do not have
+Wikidata ids of their own, only `brand:wikidata` naming the chain, so grouping
+by Wikidata id there turns every マクドナルド in the wards into one feature:
+a count of chains, not of shops. `tokyo23-food` identifies a place by its OSM
+object instead, so a branch is its own feature and a question like "which
+ward has the most hamburger places" counts branches rather than brands. The
+trade is coverage for cost: it carries only named `amenity` values of
+`restaurant`, `cafe`, `bar`, `pub`, `fast_food`, `food_court` and
+`ice_cream`, not `shop=*` or anything unnamed, which is already 28,264 rather
+than the 146,652 rows that carry any `amenity` or `shop` tag at all.
 
 `abr-pref` and `abr-muni` are Japan without OpenStreetMap in it: the Address
 Base Registry's names on the 2020 census boundaries. A graph of those two is
@@ -102,6 +119,7 @@ drift.
 
     data/tokyo23.ttl        23 wards as geo:Feature with geo:asWKT
     data/tokyo23-poi.ttl    7,265 named places, one per Wikidata id
+    data/tokyo23-food.ttl   28,264 named food-service places, one per OSM object
     data/ne-admin0.ttl      258 countries
     data/ne-admin1.ttl      4,596 states
     data/relations.tsv      every pair of features that is not disjoint
@@ -154,6 +172,9 @@ that are compared at all. 12,142 features make 147,416,022 ordered pairs;
 `tokyo23-poi` is compared against `tokyo23` and against nothing else. 7,265
 places against each other is a different dataset with a different cost, and
 the question the layer was added for is which ward a place is in.
+`tokyo23-food`, when loaded, carries the same restriction for the same
+reason: 28,264 shops against each other is not a question this endpoint
+answers.
 `layers_compared` in the manifest says which comparisons were made, so a
 reader can tell a pair that was looked at and found disjoint from a pair that
 was never formed.

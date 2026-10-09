@@ -226,6 +226,72 @@ def load_tokyo23_poi(paths, spec):
     return out
 
 
+def load_tokyo23_food(paths, spec):
+    """Named food-service places, one feature per OSM object.
+
+    tokyo23-poi's identity is the Wikidata id, because it exists to say which
+    ward a landmark is in and a landmark has one. A chain restaurant's
+    branches do not: each carries the chain's id as brand:wikidata, and the
+    chain itself is what has a plain wikidata tag, if anything does. Grouping
+    by Wikidata id here would turn every branch of every chain into one
+    feature, which answers "how many chains are in this ward" rather than
+    the question this layer is for. Grouping by osm_id instead keeps each
+    branch a feature of its own, the same choice load_tokyo23 makes for a
+    ward split across relation members.
+
+    Unnamed rows are dropped: amenity=bench and amenity=waste_basket carry
+    the same tag namespace a restaurant's node does, and a shop count is not
+    a furniture count.
+    """
+    import json as _json
+    import pyarrow.compute as pc
+    from shapely import wkb
+    from shapely.geometry import MultiPolygon
+    from shapely.ops import unary_union
+
+    FOOD = ("restaurant", "cafe", "bar", "pub", "fast_food",
+            "food_court", "ice_cream")
+
+    parts = {}
+    for path in paths:
+        t = _jp_table(path, ["osm_id", "name", "amenity", "tags", "way",
+                             "boundary"],
+                     pc.field("amenity").isin(FOOD))
+        for row in t.to_pylist():
+            if not row["name"] or row["boundary"] == "administrative":
+                continue
+            try:
+                tags = _json.loads(row["tags"] or "{}")
+            except (ValueError, TypeError):
+                tags = {}
+            p = parts.setdefault(row["osm_id"], {
+                "name": row["name"], "amenity": row["amenity"], "tags": tags,
+                "geoms": [], "rows": 0})
+            p["geoms"].append(wkb.loads(bytes(row["way"])))
+            p["rows"] += 1
+
+    out = []
+    for osm_id in sorted(parts):
+        p = parts[osm_id]
+        geom = unary_union(sorted(p["geoms"], key=lambda g: (g.bounds, g.area)))
+        if geom.geom_type == "Polygon":
+            geom = MultiPolygon([geom])
+        labels = [(p["name"], "ja")]
+        if p["tags"].get("name:en"):
+            labels.append((p["tags"]["name:en"], "en"))
+        props = ['gs:osmId "%d"^^xsd:long' % osm_id,
+                 'gs:amenity "%s"' % escape(p["amenity"])]
+        for tag, pred in (("cuisine", "cuisine"), ("brand", "brand"),
+                         ("brand:wikidata", "brandWikidata")):
+            if p["tags"].get(tag):
+                props.append('gs:%s "%s"' % (pred, escape(p["tags"][tag])))
+        out.append({"key": safe_key("food-%d" % abs(osm_id)), "sort": osm_id,
+                    "label": labels, "geometry": geom, "props": props,
+                    "parts": p["rows"], "name": p["name"]})
+    out.sort(key=lambda r: r["sort"])
+    return out
+
+
 def _jp_table(path, columns, filter_):
     """One filtered scan of an osm2pgsql Parquet table.
 
@@ -579,6 +645,7 @@ LOADERS = {"load_tokyo23": load_tokyo23,
            "load_abr_admin": load_abr_admin,
            "load_ne_admin2": load_ne_admin2,
            "load_tokyo23_poi": load_tokyo23_poi,
+           "load_tokyo23_food": load_tokyo23_food,
            "load_jp_admin": load_jp_admin,
            "load_jp_poi": load_jp_poi,
            "load_ne_admin0": load_ne_admin0,
