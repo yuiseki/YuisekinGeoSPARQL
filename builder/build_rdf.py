@@ -127,6 +127,20 @@ def load_tokyo23(path, spec):
     return out
 
 
+# osm2pgsql's default style promotes these out of the tags hstore into
+# columns of their own. A loader that looks for them in tags, the way an
+# unpromoted tag like wikidata or cuisine is read, finds nothing: the column
+# is where the value is.
+TAG_COLUMNS = ("amenity", "shop", "tourism", "railway", "place",
+              "historic", "leisure", "natural", "building")
+
+
+def tag_props(row):
+    """gs: properties for the columns osm2pgsql promoted out of tags."""
+    return ['gs:%s "%s"' % (col, escape(row[col]))
+            for col in TAG_COLUMNS if row.get(col)]
+
+
 def load_tokyo23_poi(paths, spec):
     """Named places carrying a Wikidata id, one feature per id.
 
@@ -157,7 +171,8 @@ def load_tokyo23_poi(paths, spec):
 
     KIND_RANK = {"area": 1, "point": 0}
     tables = [pq.read_table(p, columns=["osm_id", "name", "way", "tags",
-                                        "boundary", "admin_level"]).to_pylist()
+                                        "boundary", "admin_level"]
+                                       + list(TAG_COLUMNS)).to_pylist()
               for p in paths]
 
     def qid_of(row):
@@ -191,6 +206,7 @@ def load_tokyo23_poi(paths, spec):
             have = by_qid.get(qid)
             if have is None or KIND_RANK[kind] > KIND_RANK[have["kind"]]:
                 by_qid[qid] = {"kind": kind, "name": row["name"], "tags": tags,
+                               "tag_props": tag_props(row),
                                "geoms": [geom], "ids": [row["osm_id"]]}
             elif KIND_RANK[kind] == KIND_RANK[have["kind"]]:
                 # osm2pgsql splits a multipolygon's parts across rows, the
@@ -216,10 +232,7 @@ def load_tokyo23_poi(paths, spec):
         props = ["owl:sameAs wd:%s" % qid]
         for osm_id in sorted(set(p["ids"])):
             props.append('gs:osmId "%d"^^xsd:long' % osm_id)
-        for tag in ("amenity", "shop", "tourism", "railway", "place",
-                    "historic", "leisure", "natural", "building"):
-            if p["tags"].get(tag):
-                props.append('gs:%s "%s"' % (tag, escape(p["tags"][tag])))
+        props.extend(p["tag_props"])
         out.append({"key": safe_key("poi-" + qid), "sort": qid,
                     "label": labels, "geometry": geom, "props": props,
                     "parts": len(p["ids"]), "name": p["name"]})
@@ -386,7 +399,7 @@ def load_jp_poi(paths, spec):
 
     tables = []
     for path in paths:
-        cols = ["osm_id", "name", "tags", "way"]
+        cols = ["osm_id", "name", "tags", "way"] + list(TAG_COLUMNS)
         # Only the polygon table has these two, and only it needs them.
         if "polygon" in os.path.basename(path):
             cols += ["boundary", "admin_level"]
@@ -419,6 +432,7 @@ def load_jp_poi(paths, spec):
             have = by_qid.get(qid)
             if have is None or KIND_RANK[kind] > KIND_RANK[have["kind"]]:
                 by_qid[qid] = {"kind": kind, "name": row["name"], "tags": tags,
+                               "tag_props": tag_props(row),
                                "geoms": [geom], "ids": [row["osm_id"]]}
             elif KIND_RANK[kind] == KIND_RANK[have["kind"]]:
                 have["geoms"].append(geom)
@@ -440,10 +454,7 @@ def load_jp_poi(paths, spec):
         props = ["owl:sameAs wd:%s" % qid]
         for osm_id in sorted(set(p["ids"])):
             props.append('gs:osmId "%d"^^xsd:long' % osm_id)
-        for tag in ("amenity", "shop", "tourism", "railway", "place",
-                    "historic", "leisure", "natural", "building"):
-            if p["tags"].get(tag):
-                props.append('gs:%s "%s"' % (tag, escape(p["tags"][tag])))
+        props.extend(p["tag_props"])
         out.append({"key": safe_key("poi-" + qid), "sort": qid,
                     "label": labels, "geometry": geom, "props": props,
                     "parts": len(p["ids"]), "name": p["name"]})

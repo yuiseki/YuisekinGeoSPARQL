@@ -26,7 +26,7 @@ SOURCES = {
         "revision": "e60e017f6a77fa81014b11ca953ae0b2b177edaf",
         "licence": "ODbL-1.0", "features": 7265, "positions": 73973,
         "ttl_sha256":
-            "3ea1dc9e8506ff19fb93e79beea8f5c806e699663846384b101fad245103fe5a",
+            "8d509b78cbf16265c8bcc51a17e9c625e2297d006154cec2e6bb6ed9faf0ef4e",
     },
     "ne-admin0": {
         "dataset": "yuiseki/ne-admin0-10m",
