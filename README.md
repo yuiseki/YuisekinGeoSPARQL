@@ -271,6 +271,49 @@ in its own. As an observation the relation is `PO`; as a statement about
 geography it is containment. The composition check above runs on the raw
 reading and passes; a geographical claim should read the normalized one.
 
+## Names that collide
+
+**中央区 names ten different places.** `rdfs:label` is not the right column
+to group by: a designated city's ward carries its city's name baked into the
+label, `札幌市中央区`, `さいたま市中央区`, so grouping by label alone finds
+only the plain municipalities that happen to share a name, not the wards. The
+bare ward name lives in `gs:ward` instead, and Tokyo's own 中央区 has no
+`gs:ward` at all, because it is not a ward of anything bigger: it is itself
+one of the 1,909 municipalities. Finding every 中央区 means reading the bare
+name off whichever property the municipality actually has.
+
+```sparql
+PREFIX gs:   <https://yuiseki.net/geosparql/schema#>
+PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
+SELECT ?bareName (COUNT(?m) AS ?n) WHERE {
+  ?m a gs:Municipality ; rdfs:label ?label .
+  FILTER(lang(?label) = "ja")
+  OPTIONAL { ?m gs:ward ?ward }
+  # STR() strips the language tag. Without it, ward's plain "中央区" and
+  # label's "中央区"@ja are different RDF terms, so GROUP BY splits Tokyo's
+  # own 中央区, which has no gs:ward, into a group of its own: one row, so
+  # HAVING(COUNT > 1) drops it silently and the count comes out one short.
+  BIND(COALESCE(STR(?ward), STR(?label)) AS ?bareName)
+}
+GROUP BY ?bareName
+HAVING (COUNT(?m) > 1)
+ORDER BY DESC(?n)
+```
+
+| bare name | count | where |
+|---|---|---|
+| 南区 | 12 | 札幌市, さいたま市, 横浜市, 相模原市, 新潟市, 名古屋市, 京都市, 堺市, 岡山市, 広島市, 福岡市, 熊本市 |
+| 北区 | 11 | 札幌市, さいたま市, 東京都(単独), 新潟市, 名古屋市, 京都市, 大阪市, 堺市, 神戸市, 岡山市, 熊本市 |
+| 西区 | 11 | 札幌市, さいたま市, 横浜市, 新潟市, 名古屋市, 大阪市, 堺市, 神戸市, 広島市, 福岡市, 熊本市 |
+| 中央区 | 10 | 札幌市, さいたま市, 千葉市, 東京都(単独), 相模原市, 新潟市, 大阪市, 神戸市, 福岡市, 熊本市 |
+| 東区 | 8 | 札幌市, 新潟市, 名古屋市, 堺市, 岡山市, 広島市, 福岡市, 熊本市 |
+
+37 bare names collide this way, 130 municipalities in all: most of them a
+designated city's generic ward name (南区, 北区, 中央区, …), the rest
+ordinary towns that happen to share a name across prefectures (池田町 in 4,
+南部町, 美里町, 美郷町, 朝日町, 美浜町 in 3 each). `SOURCES="abr-pref
+abr-muni"` is enough to load.
+
 ## What depends on this
 
 [`yuiseki/geo-triples-tokyo23`](https://github.com/yuiseki/geo-triples-tokyo23)
